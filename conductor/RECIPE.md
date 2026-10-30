@@ -7,7 +7,7 @@ A three-column Herdr layout for managing many agents from one session. On the le
 ## What you see
 
 Left to right, with 8px padding and gaps, rounded 10px panels with 1px `border`:
-- **Left** (weight 3, 280-520px): a 132px header (`window_drag`, leaves room for macOS traffic lights at `[14,14]`): a status dot and "Jarvis", the manager terminal's reported state (or "no status reported") and address, and a card "RECENT CHANGES · LAST 30 MIN" with counts of blocked, ready to review and working agents plus up to four agents whose status changed in the last 30 minutes. Under it the manager terminal.
+- **Left** (weight 3, 280-520px): a 132px header (`window_drag`, leaves room for macOS traffic lights at `[14,14]`): a status dot and "Conductor", the manager terminal's reported state (or "no status reported") and address, and a card "RECENT CHANGES · LAST 30 MIN" with counts of blocked, ready to review and working agents plus up to four agents whose status changed in the last 30 minutes. Under it the manager terminal.
 - **Centre** (weight 5, min 380): a 30px count bar (need you / working / review / idle), then bays NEEDS YOU (always shown, "Nothing waiting on you" when empty), WORKING, REVIEW READY, IDLE (empty bays hidden), then a 26px key hint bar. Each strip is a rounded 8px card, 4px status-coloured bar on its left, number 1-8, bold name, age on the right, a second line (blocked: dialog title in `blocked` colour; others: space / tab and folder name), a third line with the latest event ("finished 3m ago · turn 4") and a bordered tag (status word; blocked adds the kind). Blocked strips are indented 14px. The selected strip uses `selected` background and a status-coloured border.
 - **Right** (weight 5, min 320): a 40px header (status dot, name, status, button "Go to session", or "Back"), then a stack: the reader, or the agent's live terminal.
 
@@ -50,7 +50,7 @@ With no agents the centre shows "No agents running" and a one-line explanation.
 
 Layout is now a column: 36px top bar (brand, layout name, status chips), a `body` row (12px padding and gap, 8px radius panels on `surface` with `selection`-coloured border), 28px key-hint footer. `ui_font` is JetBrains Mono; type scale 11/13/15 and spacing 4/8/12/16 as in the HTML mock. Strips: coloured border plus 3px left bar, bold accent name, soft task, muted mono thread line, event line with tag; blocked strips step in 8px (native cannot rotate). Status colours use ANSI slots 1/6/2 of the theme because the theme's own `working`/`done` differ from the mock.
 
-Not possible natively: letter-spacing, `text-transform` (labels are uppercased in code), rotation, gradients (the Jarvis tile's radial glow), box-shadow pulse (an opacity loop on the bar stands in), inline rich text inside truncation, the voice orb and push-to-talk, `Approve & send` / `Hold` (the board deliberately never answers dialogs), AUTO/ASK/READ policy tags and verified badges (no such data), drag between bays.
+Not possible natively: letter-spacing, `text-transform` (labels are uppercased in code), rotation, gradients (the Conductor tile's radial glow), box-shadow pulse (an opacity loop on the bar stands in), inline rich text inside truncation, the voice orb and push-to-talk, `Approve & send` / `Hold` (the board deliberately never answers dialogs), AUTO/ASK/READ policy tags and verified badges (no such data), drag between bays.
 
 ## New session
 

@@ -156,3 +156,40 @@ export class SafeRunner {
 // How often each kind of preview may refresh while it stays selected.
 export const REFRESH_MS = { blocked: 6000, working: 4000, idle: 15000, done: 30000 };
 export const SELECT_DEBOUNCE_MS = 400;
+
+// ---- conductor session resolution: optional generic file contract, see README "Conductor session file" ----
+export const MAX_MANAGER_BYTES = 4096;
+export const MANAGER_STALE_MS = 24 * 3600 * 1000;
+export const MANAGER_POLL_MS = 3000; // while the layout is shown (never below 2 s)
+export const MANAGER_IDLE_POLL_MS = 10000; // layout hidden: no file reads, just a slow loop
+export const NO_MANAGER_NOTE = "No conductor session. Run /conductor on in a pi session, or start one here";
+export const notFoundNote = (t) => `conductor terminal ${t} not found; set with install.sh --manager tN. No conductor session: run /conductor on in a pi session, or start one here`;
+const ADDR = /^[\w.:@-]{1,64}$/;
+
+// Strict parse of {v:1, terminal, updated_ms, pid?}. Returns null for anything else.
+export function parseManager(text) {
+  if (typeof text !== "string" || text.length === 0 || text.length > MAX_MANAGER_BYTES) return null;
+  try {
+    const j = JSON.parse(text);
+    if (!j || typeof j !== "object" || j.v !== 1 || typeof j.terminal !== "string" || !ADDR.test(j.terminal) || !Number.isFinite(j.updated_ms)) return null;
+    return { terminal: j.terminal, at: j.updated_ms, pid: Number.isInteger(j.pid) ? j.pid : null };
+  } catch {
+    return null;
+  }
+}
+
+// Precedence: file (valid, terminal exists, fresh or still alive) > install-time terminal (if it exists) > none.
+// `terms` = every known terminal address, `live` = addresses currently reporting an agent status.
+export function resolveManager({ fileText, terms, live, installed, now }) {
+  const f = parseManager(fileText);
+  let why = "";
+  if (f) {
+    const age = now - f.at;
+    if (!terms.has(f.terminal)) why = `file names ${f.terminal}, which does not exist`;
+    else if (age < -MANAGER_STALE_MS) why = "file timestamp is far in the future";
+    else if (age > MANAGER_STALE_MS && !live.has(f.terminal)) why = `file for ${f.terminal} is stale and the terminal is not live`;
+    else return { terminal: f.terminal, source: "file", note: "" };
+  }
+  if (installed && terms.has(installed)) return { terminal: installed, source: "install", note: "" };
+  return { terminal: null, source: "none", note: installed ? notFoundNote(installed) : NO_MANAGER_NOTE, why };
+}
