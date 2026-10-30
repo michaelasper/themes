@@ -4,7 +4,7 @@ A Herdr app layout for running many agents from one "manager" session (for examp
 
 ![Conductor](preview.png)
 
-*The preview is a real `herdr-app shot`; session names, the manager terminal and the right pane were painted over because they showed private content. It was taken with no blocked or review-ready agents, so those states are not pictured.*
+*The preview is a real `herdr-app shot` taken with the dev-only demo mode (invented sample strips, flagged "DEMO DATA" in the top bar). The manager terminal was painted over. Demo mode is off unless installed with `./install.sh --demo` (props.demo); never use it for real work.*
 
 It is meant to be switched to and from, not lived in: `ctrl-shift-l` cycles layouts, and with zero agents it shows an empty state.
 

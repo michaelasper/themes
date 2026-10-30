@@ -45,3 +45,9 @@ With no agents the centre shows "No agents running" and a one-line explanation.
 - A `done` agent shows git status and diff stat of its folder.
 - A `working`/`idle` agent selected shows its live terminal on the right.
 - `ctrl-shift-l` switches away and back.
+
+## Fidelity pass (v2)
+
+Layout is now a column: 36px top bar (brand, layout name, status chips), a `body` row (12px padding and gap, 8px radius panels on `surface` with `selection`-coloured border), 28px key-hint footer. `ui_font` is JetBrains Mono; type scale 11/13/15 and spacing 4/8/12/16 as in the HTML mock. Strips: coloured border plus 3px left bar, bold accent name, soft task, muted mono thread line, event line with tag; blocked strips step in 8px (native cannot rotate). Status colours use ANSI slots 1/6/2 of the theme because the theme's own `working`/`done` differ from the mock.
+
+Not possible natively: letter-spacing, `text-transform` (labels are uppercased in code), rotation, gradients (the Jarvis tile's radial glow), box-shadow pulse (an opacity loop on the bar stands in), inline rich text inside truncation, the voice orb and push-to-talk, `Approve & send` / `Hold` (the board deliberately never answers dialogs), AUTO/ASK/READ policy tags and verified badges (no such data), drag between bays.
