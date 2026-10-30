@@ -229,3 +229,49 @@ export function effectiveStatus(own, subs) {
   if (own === "working") return "working";
   return subs > 0 && (own === "idle" || own === "done") ? "working" : own;
 }
+
+// ---- interrupt button: optional, generic "interrupt command" contract (README "Interrupt command") ----
+export const INTERRUPT_TIMEOUT_MS = 3000; // hard limit for the command
+export const INTERRUPT_COOLDOWN_MS = 1000; // clicks and keys are ignored this long after one ran
+export const INTERRUPT_ERROR_MS = 4000; // how long a failure note stays visible
+export const NO_INTERRUPT_NOTE = "no interrupt command configured";
+
+// The command is user config only (props.interrupt_cmd, set by install.sh --interrupt-cmd): one absolute path, run as
+// argv with no arguments, never a shell string, and never read from the voice file or any file a tool writes.
+export function interruptCmd(p) {
+  const c = p?.interrupt_cmd;
+  return typeof c === "string" && c.length <= 512 && /^\/[^\0\n\r]+$/.test(c) ? c : null;
+}
+
+// Single in flight, a cooldown after each run, a hard timeout. `check` re-verifies "speaking" just before running
+// (a fresh read of the voice file), so a stale button can never fire into silence. Never throws.
+export class InterruptGate {
+  constructor({ now, timeoutMs = INTERRUPT_TIMEOUT_MS, cooldownMs = INTERRUPT_COOLDOWN_MS }) {
+    this.now = now;
+    this.timeoutMs = timeoutMs;
+    this.cooldownMs = cooldownMs;
+    this.busy = false;
+    this.lastAt = null;
+  }
+  ready() { return !this.busy && (this.lastAt == null || this.now() - this.lastAt >= this.cooldownMs); }
+  async run({ check, fn, sleep }) {
+    if (!this.ready()) return { ran: false, why: this.busy ? "busy" : "cooldown" };
+    this.busy = true;
+    let ran = false;
+    try {
+      if (!(await check())) return { ran: false, why: "not-speaking" };
+      ran = true;
+      this.lastAt = this.now();
+      try {
+        return { ran: true, ok: true, value: await withTimeout(fn, this.timeoutMs, sleep) };
+      } catch (e) {
+        return { ran: true, ok: false, error: String(e?.message ?? e) };
+      }
+    } catch {
+      return { ran: false, why: "check-failed" };
+    } finally {
+      this.busy = false;
+      if (ran) this.lastAt = this.now();
+    }
+  }
+}

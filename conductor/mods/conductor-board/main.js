@@ -30,7 +30,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, spaces, props, run, theme, shared, setShared, setAgentOrder, exec, home, readTextFile } from "herdr";
-import { workingDescendants, effectiveStatus, Limiter, VoiceTrack, effVoice, voicePollMs, SafeRunner, Debounce, REFRESH_MS, SELECT_DEBOUNCE_MS, resolveManager, MANAGER_POLL_MS, MANAGER_IDLE_POLL_MS, NO_MANAGER_NOTE } from "./logic.js";
+import { workingDescendants, effectiveStatus, Limiter, VoiceTrack, effVoice, voicePollMs, SafeRunner, Debounce, REFRESH_MS, SELECT_DEBOUNCE_MS, resolveManager, MANAGER_POLL_MS, MANAGER_IDLE_POLL_MS, NO_MANAGER_NOTE, interruptCmd, InterruptGate, parseVoice, INTERRUPT_ERROR_MS, NO_INTERRUPT_NOTE } from "./logic.js";
 
 const BAYS = [
   { key: "blocked", label: "NEEDS YOU" },
@@ -166,9 +166,28 @@ function startConductor() {
   run("tab.new", { name: "conductor", argv: ["pi"] });
 }
 
+// Interrupt: runs the user-configured command (props.interrupt_cmd, absolute path, argv, no arguments) while the voice
+// file says "speaking" right now. One gate for the host button and the board key. The failure note is shown by the host.
+const gate = new InterruptGate({ now: () => Date.now() });
+let interruptErr = null; // { msg, until }
+const shownErr = () => (interruptErr && Date.now() < interruptErr.until ? interruptErr.msg : "");
+async function interrupt(cx) {
+  const cmd = interruptCmd(props());
+  if (!cmd || isDemo() || !layoutActive()) return;
+  const r = await gate.run({
+    sleep: (ms) => cx.sleep(ms),
+    check: async () => { try { return effVoice(parseVoice(await readTextFile(voicePath())), Date.now()).state === "speaking"; } catch { return false; } },
+    fn: async () => { const x = await exec(cmd, []); if (x.code !== 0) throw new Error(`exit ${x.code}`); },
+  });
+  if (r.ran && !r.ok) interruptErr = { msg: /timed out/.test(r.error) ? "interrupt timed out" : "interrupt failed", until: Date.now() + INTERRUPT_ERROR_MS };
+  else if (r.ran) interruptErr = null;
+  if (r.ran) cx.notify();
+}
+
 export default class ConductorBoard extends View {
   init(_props, cx) {
     this.h = cx.focus_handle();
+    this.cx = cx;
     this.git = {}; // address -> { at, status, diff, cwd, error }
     const role = props()?.role ?? "strips";
     cx.timer.every(30000, (cx) => cx.notify()); // ages
@@ -253,7 +272,8 @@ export default class ConductorBoard extends View {
           } catch {
             this.track.apply(null); // unreadable: offline
           }
-          if (this.track.changed(Date.now())) cx.notify();
+          const err = shownErr();
+          if (this.track.changed(Date.now()) || err !== this.errShown) { this.errShown = err; cx.notify(); }
         }
         await cx.sleep(voicePollMs(effVoice(this.track.last, Date.now()), active));
       }
@@ -280,7 +300,7 @@ export default class ConductorBoard extends View {
       else bar = bar.h(3 + Math.round((hist[i] ?? 0) * (WAVE_H - 3))).transition("height", 200);
       bars.push(bar);
     }
-    return v_flex().gap(4)
+    return v_flex().gap(4).flex_1().min_w(0)
       .child(h_flex().h(WAVE_H).items_center().gap(3).children(bars))
       .child(h_flex().gap(8).items_center()
         .child(div().text_size(11).text_color(active ? color : t.muted).child(label))
@@ -421,7 +441,7 @@ export default class ConductorBoard extends View {
   foot(t) {
     const hint = (k, text) => h_flex().gap(4).items_center().child(this.keycap(t, k)).child(div().text_size(11).text_color(t.muted).child(text));
     return h_flex().size_full().bg(t.chrome).px(16).gap(12).items_center().border_t(1).border_color(t.selected)
-      .child(hint("1-8", "select")).child(hint("j/k", "move")).child(hint("g", "open here")).child(hint("esc", "back")).child(hint("n", "new session")).child(hint("click", "focus board first"));
+      .child(hint("1-8", "select")).child(hint("j/k", "move")).child(hint("g", "open here")).child(hint("esc", "back")).child(hint("n", "new session")).child(hint("x", "interrupt speech")).child(hint("click", "focus board first"));
   }
 
   // ---------- strips ----------
@@ -495,6 +515,7 @@ export default class ConductorBoard extends View {
         else if (k === "g" || k === "enter") open();
         else if (k === "escape" || k === "esc") { if (liveOn() && shared(OPEN) != null) setShared(HELD, shared(OPEN)); this.release(); }
         else if (k === "n") newSession(this.manager());
+        else if (k === "x") this.cx.spawn((cx) => interrupt(cx));
       })
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().px(12).pt(8).pb(12).gap(4)
         .children(body)
@@ -524,10 +545,23 @@ export default class ConductorBoard extends View {
       .child(div().text_size(15).font_bold().text_color(t.accent).child("Conductor"))
       .child(div().text_size(11).text_color(t2.caramel).child(mgr || isDemo() ? `${state === "unknown" ? "no status reported" : state}${msgOf(term) ? ` · ${msgOf(term)}` : ""}${rec?.source === "file" ? " · set by /conductor" : ""}` : mnote || NO_MANAGER_NOTE))
       .when(!mgr && !isDemo(), (el) => el.child(this.startButton(t)))
-      .when(waveOn(), (el) => el.child(this.wave(t)))
+      .when(waveOn(), (el) => el.child(h_flex().gap(8).items_start().child(this.wave(t)).child(this.interruptBox(t))))
       .child(v_flex().px(12).py(8).rounded(8).bg(t.chrome).border_l(2).border_color(t2.cursor)
         .child(div().text_size(11).text_color(t2.soft).child(line))
         .children(recent.map((r) => div().truncate().text_size(11).text_color(r.a.status === "blocked" ? t.blocked : t.muted).child(`${label(r.a, r.term)} → ${r.a.status === "done" ? "review ready" : r.a.status} ${age(r.ms)} ago`))));
+  }
+
+  // Next to the waveform. No command configured: a quiet note (never an error). Command + speaking now: the button.
+  // Otherwise nothing. A failed run shows a short error note for a few seconds.
+  interruptBox(t) {
+    const cmd = interruptCmd(props());
+    const speaking = !isDemo() && effVoice(this.track?.last ?? null, Date.now()).state === "speaking";
+    const err = shownErr();
+    const box = v_flex().flex_none().gap(4).items_end();
+    if (!cmd) return box.child(div().max_w(110).text_size(10).text_color(t.muted).child(NO_INTERRUPT_NOTE));
+    return box
+      .when(speaking, (el) => el.child(this.button(t, "interrupt", "■ Interrupt · x", () => this.cx.spawn((cx) => interrupt(cx)), true)))
+      .when(!!err, (el) => el.child(div().text_size(11).text_color(t.blocked).child(err)));
   }
 
   startButton(t) {
