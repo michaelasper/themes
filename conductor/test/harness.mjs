@@ -483,6 +483,62 @@ await test("review banner: only for the selected review-ready session; git read-
   assert.ok(!state.calls.some((x) => x[0] === "hc"));
 }));
 
+// ---- interrupt button / key ----
+const VF = "/h/.pi/agent/pi-speak/state.json";
+const vfile = (st, extra = {}) => JSON.stringify({ v: 1, state: st, level: 0.5, updated_ms: Date.now(), ...extra });
+const CMD = "/opt/pi-speak/daemon/bin/pi-speak-interrupt";
+const ints = () => state.calls.filter((x) => x[0] === "exec");
+const hostWith = async (props, file) => { reset({}); if (file) state.files[VF] = file; const h = view("host", props); await settle(); return h; };
+await test("interrupt: button only while speaking and fresh; hidden idle/listening/transcribing/offline/stale; no command = quiet disabled note", async () => withClock(async (c) => {
+  for (const st of ["idle", "listening", "transcribing"]) { const h = await hostWith({ interrupt_cmd: CMD }, vfile(st)); assert.ok(!/Interrupt/.test(h.draw()) && !h.rec.clicks.interrupt, st); }
+  const off = await hostWith({ interrupt_cmd: CMD }, undefined); assert.ok(!off.rec.clicks.interrupt && !/Interrupt/.test(off.draw()), "offline");
+  const sp = await hostWith({ interrupt_cmd: CMD }, vfile("speaking")); assert.match(sp.draw(), /Interrupt/); assert.ok(sp.rec.clicks.interrupt); assert.ok(!/no interrupt command/.test(sp.draw()));
+  c.t += 3500; delete sp.rec.clicks.interrupt; sp.draw(); assert.ok(!sp.rec.clicks.interrupt, "stale speaking file hides the button"); assert.ok(!/Interrupt/.test(sp.draw()));
+  for (const bad of [undefined, "", "relative/cmd", "/a\nb", 5, null]) {
+    const n = await hostWith({ interrupt_cmd: bad }, vfile("speaking")); const t = n.draw();
+    assert.match(t, /no interrupt command configured/); assert.ok(!n.rec.clicks.interrupt, String(bad));
+  }
+  const demo = await hostWith({ interrupt_cmd: CMD, demo: true }, undefined); assert.ok(!demo.rec.clicks.interrupt);
+}));
+await test("interrupt: click runs the configured command once as argv (no args, no shell), debounced, ignores ~1s, then works again", async () => withClock(async (c) => {
+  const h = await hostWith({ interrupt_cmd: CMD }, vfile("speaking", { interrupt_cmd: "/evil", cmd: "rm" })); h.draw();
+  const a = h.rec.clicks.interrupt(), b = h.rec.clicks.interrupt(), d = h.rec.clicks.interrupt(); await Promise.all([a, b, d]); await settle();
+  assert.deepEqual(ints(), [["exec", CMD, []]], "single in flight: one run for three clicks");
+  c.t += 500; state.files[VF] = vfile("speaking"); await h.rec.clicks.interrupt(); assert.equal(ints().length, 1, "cooldown after a click");
+  c.t += 600; state.files[VF] = vfile("speaking"); await h.rec.clicks.interrupt(); assert.equal(ints().length, 2);
+  assert.ok(!/sh -c|\/bin\/|bash|exec\(`/.test(readFileSync(join(here, "../mods/conductor-board/main.js"), "utf8").match(/async function interrupt[\s\S]*?\n}\n/)[0]), "no shell string");
+}));
+await test("interrupt: click after speech ended (file went idle between draw and click) does nothing", async () => withClock(async () => {
+  const h = await hostWith({ interrupt_cmd: CMD }, vfile("speaking")); h.draw(); const click = h.rec.clicks.interrupt;
+  state.files[VF] = vfile("idle"); await click(); assert.equal(ints().length, 0);
+  state.files[VF] = new Error("gone"); await click(); assert.equal(ints().length, 0);
+}));
+await test("interrupt: command failure (exit code, rejection, timeout) shows brief error text and never throws; clears after 4 s", async () => withClock(async (c) => {
+  for (const impl of [() => ({ code: 3, stdout: "", stderr: "secret-ish" }), async () => { throw new Error("ENOENT /nope"); }]) {
+    c.t += 5000; const h = await hostWith({ interrupt_cmd: CMD }, vfile("speaking")); state.execImpl = impl; h.draw();
+    await h.rec.clicks.interrupt(); const t = h.draw(); assert.match(t, /interrupt failed/); assert.ok(!/secret|ENOENT/.test(t), "error text is brief and generic");
+    c.t += 4100; state.files[VF] = vfile("speaking"); assert.ok(!/interrupt failed/.test(h.draw()), "note expires");
+  }
+  c.t += 5000; const h = await hostWith({ interrupt_cmd: CMD }, vfile("speaking")); state.execImpl = () => new Promise(() => {}); h.draw();
+  const sleep = mkSleep({ get t() { return c.t; }, adv: (ms) => { c.t += ms; } }); h.m.cx.sleep = sleep;
+  const p = h.rec.clicks.interrupt(); await settle(); sleep.tick(3001); await p; await settle();
+  assert.match(h.draw(), /interrupt timed out/); c.t += 1100; state.files[VF] = vfile("speaking"); state.execImpl = null; h.draw(); const n0 = ints().length; await h.rec.clicks.interrupt(); assert.equal(ints().length, n0 + 1, "gate free after a timeout");
+}));
+await test("interrupt: x key on the board; not when idle, offline, no command, or demo; other keys unaffected", async () => withClock(async (c) => {
+  reset({}); state.files[VF] = vfile("speaking"); const s = view("strips", { interrupt_cmd: CMD }); s.draw();
+  await s.rec.onKey({ keystroke: "x" }); await settle(); assert.deepEqual(ints(), [["exec", CMD, []]]);
+  c.t += 1100; state.files[VF] = vfile("speaking"); s.rec.onKey({ keystroke: "x" }); s.rec.onKey({ keystroke: "x" }); await settle(); assert.equal(ints().length, 2, "double key: one run");
+  c.t += 1100; state.files[VF] = vfile("idle"); s.rec.onKey({ keystroke: "x" }); await settle(); assert.equal(ints().length, 2);
+  state.files[VF] = undefined; s.rec.onKey({ keystroke: "x" }); await settle(); assert.equal(ints().length, 2);
+  reset({}); state.files[VF] = vfile("speaking"); const n = view("strips", {}); n.draw(); n.rec.onKey({ keystroke: "x" }); await settle(); assert.equal(state.calls.filter((x) => x[0] === "exec").length, 0, "no command: never errors");
+  reset({}); state.files[VF] = vfile("speaking"); const dm = view("strips", { interrupt_cmd: CMD, demo: true }); dm.draw(); dm.rec.onKey({ keystroke: "x" }); await settle(); assert.equal(state.calls.filter((x) => x[0] === "exec").length, 0);
+  const f = view("foot", {}); assert.match(f.draw(), /interrupt speech/);
+}));
+await test("interrupt: hidden layout does nothing; no 'x' clash with existing keys", async () => withClock(async () => {
+  reset({}); state.files[VF] = vfile("speaking"); const s = view("strips", { interrupt_cmd: CMD }); s.draw(); state.shared.layout = "main"; s.rec.onKey({ keystroke: "x" }); await settle(); assert.equal(ints().length, 0);
+  const src = readFileSync(join(here, "../mods/conductor-board/main.js"), "utf8"); assert.equal((src.match(/k === "x"/g) || []).length, 1);
+}));
+
 await test("no private paths or pi imports in the shipped mod", () => {
   for (const f of ["main.js", "logic.js"]) { const s = readFileSync(join(here, "../mods/conductor-board", f), "utf8"); assert.ok(!/\/Users\/|@mariozechner|pi-coding-agent|from "pi/.test(s), f); assert.ok(!/watchFolder\(/.test(s) && !/setTimeout|setInterval/.test(s), f + " forbidden api"); }
 });

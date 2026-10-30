@@ -17,6 +17,7 @@ git clone https://github.com/michaelasper/themes.git
 cd themes/conductor
 ./install.sh                       # no conductor terminal pinned until /conductor on registers one; wave and previews on
 ./install.sh --manager t1          # fallback: pin terminal t1 in the left slot if no conductor session file names one
+./install.sh --interrupt-cmd /abs/path/to/stop-speech   # command behind the Interrupt button (see below)
 ./install.sh --no-wave --no-live-pane   # waveform off / the right pane does not follow the selection (Enter, g or Open embeds)
 ```
 
@@ -39,7 +40,7 @@ To use another theme, edit `"theme"` on the root of `~/.config/herdr-app/layouts
 | Strip status | **effective status** (see "Subagents and effective status"); the Conductor's own session is not a strip (it is pinned in the left column) |
 | Left header | the Conductor's reported state (or the empty state and "+ Start conductor") and "recent changes in the last 30 min" computed from `status_ms` |
 
-Keys work after clicking the centre column: `1`-`8` select, `j`/`k` or arrows move, `g`/`enter` (or the **Open** button) put the session's terminal in the right panel, `esc` (or **Back**) returns, `n` starts a new session. Working strips have a quiet native opacity glow; blocked ones pulse; done and idle are still.
+Keys work after clicking the centre column: `1`-`8` select, `j`/`k` or arrows move, `g`/`enter` (or the **Open** button) put the session's terminal in the right panel, `esc` (or **Back**) returns, `n` starts a new session, `x` interrupts speech (see "Interrupt button"). Working strips have a quiet native opacity glow; blocked ones pulse; done and idle are still.
 
 ## Not implemented (deliberately not faked)
 
@@ -71,7 +72,7 @@ Switches: `--no-live-pane` (the pane embeds only on Enter/g/Open), `--no-wave` (
 
 ## Tests
 
-`node test/harness.mjs` runs the real `main.js` against mocked `gpui-kit`/`herdr` modules: voice file parsing and staleness, poll intervals, redraw-only-on-change, selection debounce, throttling, single in flight, timeout, rate cap, back-off, zero agents, hidden layout, `wave=false`/`peek=false`, demo mode, `n` key, that nothing runs during render, Open taking over the panel and Back restoring, one embed at a time, the Conductor never being openable, the conductor session file (valid, stale, missing, terminal gone, changing at runtime, re-pin), the empty state and the Start button. It does not draw anything (a recording stand-in for the UI kit collects the texts and click handlers). Added: effective status (parent idle + child working, child done, nested, blocked precedence, no children), the Conductor hidden from strips/counts/numbering/selection and following a changed manager id, the live pane (debounced follow, one at a time, never the Conductor, Esc hold, `--no-live-pane`), and the review banner (review-ready only, cached, single in flight, no snapshot code path).
+`node test/harness.mjs` runs the real `main.js` against mocked `gpui-kit`/`herdr` modules: voice file parsing and staleness, poll intervals, redraw-only-on-change, selection debounce, throttling, single in flight, timeout, rate cap, back-off, zero agents, hidden layout, `wave=false`/`peek=false`, demo mode, `n` key, that nothing runs during render, Open taking over the panel and Back restoring, one embed at a time, the Conductor never being openable, the conductor session file (valid, stale, missing, terminal gone, changing at runtime, re-pin), the empty state and the Start button. It does not draw anything (a recording stand-in for the UI kit collects the texts and click handlers). Interrupt: visible/enabled only while speaking and fresh, one command run per click burst, 1 s cooldown, missing command, failure/timeout note, the `x` key, no shell string. Added: effective status (parent idle + child working, child done, nested, blocked precedence, no children), the Conductor hidden from strips/counts/numbering/selection and following a changed manager id, the live pane (debounced follow, one at a time, never the Conductor, Esc hold, `--no-live-pane`), and the review banner (review-ready only, cached, single in flight, no snapshot code path).
 
 ## Safe first run (visual verification is yours)
 
@@ -107,6 +108,19 @@ Default path `~/.pi/agent/pi-speak/state.json`; override with the host block's `
 - `--demo` shows a synthetic waveform driven by native loops, labelled `demo`.
 
 pi-speak is one known writer (speaking level: RMS envelope of the clip being played; listening: mic RMS). The mod does not depend on it.
+
+## Interrupt button and the interrupt command (optional, generic)
+
+Next to the waveform, an **■ Interrupt · x** button appears **only while the voice file says `speaking` and is fresh** (state `speaking`, `updated_ms` within 3 s). It is hidden when idle, listening, transcribing or offline. The `x` key on the board does the same. Both read the voice file again right before acting, so a stale button never fires into silence.
+
+It runs the **interrupt command**: *any executable that stops speech*. The contract:
+
+- one absolute path, configured by you: `./install.sh --interrupt-cmd /abs/path` (or `CONDUCTOR_INTERRUPT_CMD`), stored as `props.interrupt_cmd` on the layout blocks. If omitted, `install.sh` uses `$HOME/source/pi-speak/daemon/bin/pi-speak-interrupt` when that executable exists. The path is user config only: it is never read from the voice file or any file a tool writes.
+- run through the app's `exec` as argv with **no arguments** (never a shell string), 3 s hard timeout, exit code 0 = success. It must find its own credentials; the layout never reads a token or puts one in a command line.
+- single in flight; further clicks/keys are ignored while it runs and for 1 s after. A non-zero exit, a start failure or a timeout shows a short `interrupt failed` / `interrupt timed out` note for 4 s (no output of the command is shown).
+- no command configured: the button is not offered; the header shows the quiet note `no interrupt command configured`. Nothing errors. Needs the waveform (`--no-wave` removes the voice reads and with them the button; the key then also does nothing). Not available in demo mode.
+
+The layout imports nothing from any voice tool. pi-speak ships `daemon/bin/pi-speak-interrupt`, which stops all speech and clears its queue (README there).
 
 ## Live pane
 
