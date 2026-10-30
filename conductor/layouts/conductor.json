@@ -1,0 +1,138 @@
+{
+  "id": "root",
+  "type": "row",
+  "titlebar": "none",
+  "traffic_lights": [
+    14,
+    14
+  ],
+  "preview": "layouts/conductor.svg",
+  "theme": "dr-pepper",
+  "background": "canvas",
+  "terminal_padding": [
+    10,
+    10
+  ],
+  "padding": 8,
+  "gap": 8,
+  "children": [
+    {
+      "id": "host",
+      "type": "column",
+      "size": {
+        "weight": 3
+      },
+      "min": 280,
+      "max": 520,
+      "radius": 10,
+      "background": "chrome",
+      "border": {
+        "width": 1,
+        "color": "border"
+      },
+      "children": [
+        {
+          "id": "host-head",
+          "type": "block",
+          "content": {
+            "mod": "conductor-board",
+            "props": {
+              "role": "host"
+            }
+          },
+          "size": {
+            "px": 132
+          },
+          "window_drag": true
+        },
+        {
+          "id": "manager",
+          "type": "block",
+          "content": {
+            "tab": "active",
+            "pane": {
+              "gap": 0,
+              "radius": 0,
+              "background": "background",
+              "lone": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "strips",
+      "type": "block",
+      "size": {
+        "weight": 5
+      },
+      "min": 380,
+      "radius": 10,
+      "background": "chrome",
+      "border": {
+        "width": 1,
+        "color": "border"
+      },
+      "content": {
+        "mod": "conductor-board",
+        "props": {
+          "role": "strips"
+        }
+      }
+    },
+    {
+      "id": "right",
+      "type": "column",
+      "size": {
+        "weight": 5
+      },
+      "min": 320,
+      "radius": 10,
+      "background": "chrome",
+      "border": {
+        "width": 1,
+        "color": "border"
+      },
+      "children": [
+        {
+          "id": "right-head",
+          "type": "block",
+          "content": {
+            "mod": "conductor-board",
+            "props": {
+              "role": "head"
+            }
+          },
+          "size": {
+            "px": 40
+          }
+        },
+        {
+          "id": "right-stack",
+          "type": "stack",
+          "active": "detail",
+          "children": [
+            {
+              "id": "detail",
+              "type": "block",
+              "content": {
+                "mod": "conductor-board",
+                "props": {
+                  "role": "detail"
+                }
+              }
+            },
+            {
+              "id": "peek",
+              "type": "block",
+              "background": "background",
+              "content": {
+                "agent": "focused"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
