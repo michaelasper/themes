@@ -37,6 +37,7 @@ To use another theme, edit `"theme"` on the root of `~/.config/herdr-app/layouts
 | Blocked strip | dialog title (`report.msg`) and kind (`question`, `auth`, `permission`) when the agent reports one; offset right, pulsing bar |
 | Review banner (selected session is `done`) | top of the right pane, above the terminal: last status message; `git --no-optional-locks -C <cwd> status --short` and `diff --stat`, read-only, one read at a time, at most every 30 s, only for the selected review-ready session |
 | Right pane | the selected session's real terminal (live pane, see "Live pane"); the header shows its status line (blocked: the dialog title and kind it reported; age; turn; subagents working) |
+| Session cost (strip, dimmed, right of the event line) and the total in the top bar | optional per-terminal files, see "Session cost files"; nothing is shown for a session without a fresh one |
 | Strip status | **effective status** (see "Subagents and effective status"); the Conductor's own session is not a strip (it is pinned in the left column) |
 | Left header | the Conductor's reported state (or the empty state and "+ Start conductor") and "recent changes in the last 30 min" computed from `status_ms` |
 
@@ -72,7 +73,7 @@ Switches: `--no-live-pane` (the pane embeds only on Enter/g/Open), `--no-wave` (
 
 ## Tests
 
-`node test/harness.mjs` runs the real `main.js` against mocked `gpui-kit`/`herdr` modules: voice file parsing and staleness, poll intervals, redraw-only-on-change, selection debounce, throttling, single in flight, timeout, rate cap, back-off, zero agents, hidden layout, `wave=false`/`peek=false`, demo mode, `n` key, that nothing runs during render, Open taking over the panel and Back restoring, one embed at a time, the Conductor never being openable, the conductor session file (valid, stale, missing, terminal gone, changing at runtime, re-pin), the empty state and the Start button. It does not draw anything (a recording stand-in for the UI kit collects the texts and click handlers). Interrupt: visible/enabled only while speaking and fresh, one command run per click burst, 1 s cooldown, missing command, failure/timeout note, the `x` key, no shell string. Added: effective status (parent idle + child working, child done, nested, blocked precedence, no children), the Conductor hidden from strips/counts/numbering/selection and following a changed manager id, the live pane (debounced follow, one at a time, never the Conductor, Esc hold, `--no-live-pane`), and the review banner (review-ready only, cached, single in flight, no snapshot code path).
+`node test/harness.mjs` runs the real `main.js` against mocked `gpui-kit`/`herdr` modules: voice file parsing and staleness, poll intervals, redraw-only-on-change, selection debounce, throttling, single in flight, timeout, rate cap, back-off, zero agents, hidden layout, `wave=false`/`peek=false`, demo mode, `n` key, that nothing runs during render, Open taking over the panel and Back restoring, one embed at a time, the Conductor never being openable, the conductor session file (valid, stale, missing, terminal gone, changing at runtime, re-pin), the empty state and the Start button. Session cost: strict parse, footer format and `(sub)`, known/unknown/stale/malformed/future, partial vs complete total, the Conductor excluded, unsafe addresses never become paths, opt-out, hidden layout, no redraw when unchanged. It does not draw anything (a recording stand-in for the UI kit collects the texts and click handlers). Interrupt: visible/enabled only while speaking and fresh, one command run per click burst, 1 s cooldown, missing command, failure/timeout note, the `x` key, no shell string. Added: effective status (parent idle + child working, child done, nested, blocked precedence, no children), the Conductor hidden from strips/counts/numbering/selection and following a changed manager id, the live pane (debounced follow, one at a time, never the Conductor, Esc hold, `--no-live-pane`), and the review banner (review-ready only, cached, single in flight, no snapshot code path).
 
 ## Safe first run (visual verification is yours)
 
@@ -108,6 +109,26 @@ Default path `~/.pi/agent/pi-speak/state.json`; override with the host block's `
 - `--demo` shows a synthetic waveform driven by native loops, labelled `demo`.
 
 pi-speak is one known writer (speaking level: RMS envelope of the clip being played; listening: mic RMS). The mod does not depend on it.
+
+## Session cost files (optional, generic)
+
+Each strip can show that session's cost, small and dimmed on the metadata line, in the footer's own style (`$29.790`, with ` (sub)` when it is a subscription). The top bar shows the total over the strips, `partial k/n` when some strips have no known cost. **If a session's cost is unknown, nothing is shown for it**, never a guess.
+
+Where it comes from: nothing in Herdr's status carries cost (`agents()`/`terminals()` report status, message, turn only), and the footer is only drawn inside the terminal. The one truthful source is the session itself. The [pi-herdr-manager](https://github.com/michaelasper/pi-herdr-manager) extension, loaded in a pi session running in a Herdr terminal, writes the cost pi's footer computes (the sum of `usage.cost.total` over the session's entries, plus the `(sub)` rule) to a file. This mod reads files only; it imports no pi code and never reads terminal text. Any tool may write them:
+
+```
+~/.config/conductor/costs/<terminal address>.json   (override: props.cost_dir)
+{"v":1,"usd":29.79,"sub":true,"updated_ms":1760000000000}
+```
+
+- One file per terminal (so many writers never race on one file), written atomically (temp file, then rename). `sub` is optional: `true`/`false` only when the writer knew it. Numbers only: no names, paths or content; files over 1 KB, other versions, negative or non-numeric values are ignored.
+- Ignored (shows nothing) when older than 1 hour or dated in the future; the pi extension refreshes every 10 minutes while the session lives and deletes the file on shutdown. A session that crashed can show its last figure for up to an hour. Entries whose terminal is gone are dropped at the next poll.
+- Like the footer, a session with $0 that is not a subscription shows nothing; a subscription with $0 shows `$0.000 (sub)`.
+- The Conductor's own session is **excluded** (it is not a strip, its file is never read, and it is not in the total).
+- Cost: one sequential `readTextFile` per live non-Conductor session (at most 64) every 15 s while this layout is shown, none while hidden; no `exec`, no `hc read`, nothing during render; shared state is written (and the window redrawn) only when the answer changes. `props.costs = false` turns it all off (no reads, nothing shown). Off in demo mode.
+- The total sums the strips' known figures only; subscription figures count at their API-equivalent value, as in the footer.
+
+Not verified in the app: how the dimmed text looks at the strip's width (the harness cannot draw). Sessions started before the extension update show nothing until reloaded (`/reload`).
 
 ## Interrupt button and the interrupt command (optional, generic)
 

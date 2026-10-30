@@ -131,7 +131,7 @@ await test("render: every role renders with zero agents and with agents; no comm
   for (const withAgents of [false, true]) for (const role of ROLES) {
     reset({ role, manager: "t1" }); if (withAgents) { state.agents = [ag("t2", "blocked"), ag("t3", "working"), ag("t4", "done"), ag("t5", "idle")]; state.terms = state.agents.map((a) => ({ address: a.address, cwd: "/w/" + a.address })); }
     const v = new Mod(); const m = mkCx(); v.init({}, m.cx);
-    v.render(m.cx); v.render(m.cx);
+    v.render(m.cx); v.render(m.cx); await settle(60); // let the top role's first cost reads finish before the next reset
     assert.equal(state.calls.filter((c) => c[0] !== "read").length, 0, `${role} ran a command in init/render`);
     assert.equal(state.focusCalls, 0, "focused() is not needed anymore");
   }
@@ -538,6 +538,87 @@ await test("interrupt: hidden layout does nothing; no 'x' clash with existing ke
   reset({}); state.files[VF] = vfile("speaking"); const s = view("strips", { interrupt_cmd: CMD }); s.draw(); state.shared.layout = "main"; s.rec.onKey({ keystroke: "x" }); await settle(); assert.equal(ints().length, 0);
   const src = readFileSync(join(here, "../mods/conductor-board/main.js"), "utf8"); assert.equal((src.match(/k === "x"/g) || []).length, 1);
 }));
+
+// ---- per-session cost (optional generic per-terminal files) ----
+const CD = "/h/.config/conductor/costs";
+const cfile = (usd, extra = {}) => JSON.stringify({ v: 1, usd, updated_ms: Date.now(), ...extra });
+await test("cost: parseCost strict; format like the footer; label rules; total partial vs complete", () => {
+  assert.deepEqual(L.parseCost('{"v":1,"usd":29.79,"sub":true,"updated_ms":5}'), { usd: 29.79, sub: true, at: 5 });
+  assert.equal(L.parseCost('{"v":1,"usd":1,"updated_ms":5}').sub, null);
+  assert.equal(L.parseCost('{"v":1,"usd":1,"sub":"yes","updated_ms":5}').sub, null);
+  for (const bad of ["", null, undefined, "{", "[]", "null", '{"v":2,"usd":1,"updated_ms":5}', '{"v":1,"usd":"1","updated_ms":5}', '{"v":1,"usd":-1,"updated_ms":5}', '{"v":1,"usd":1e9,"updated_ms":5}', '{"v":1,"usd":1}', '{"v":1,"usd":null,"updated_ms":5}', "x".repeat(2000), '{"v":1,"usd":1,"updated_ms":5,"pad":"' + "x".repeat(1100) + '"}'])
+    assert.equal(L.parseCost(bad), null, String(bad).slice(0, 30));
+  assert.equal(L.fmtCost(29.79, true), "$29.790 (sub)"); assert.equal(L.fmtCost(0.5, false), "$0.500"); assert.equal(L.fmtCost(0.5, null), "$0.500");
+  const now = 10_000_000, rec = (usd, sub, at) => ({ usd, sub, at });
+  assert.equal(L.costLabel(rec(1.2, null, now - 1000), now), "$1.200");
+  assert.equal(L.costLabel(rec(1.2, true, now - 1000), now), "$1.200 (sub)");
+  assert.equal(L.costLabel(rec(0, false, now), now), "", "like the footer: zero and not a subscription shows nothing");
+  assert.equal(L.costLabel(rec(0, true, now), now), "$0.000 (sub)");
+  assert.equal(L.costLabel(rec(1, null, now - L.COST_MAX_AGE_MS - 1), now), "", "stale");
+  assert.equal(L.costLabel(rec(1, null, now + 120000), now), "", "from the future");
+  assert.equal(L.costLabel(undefined, now), ""); assert.equal(L.costLabel(null, now), "");
+  const map = { a: rec(1, null, now), b: rec(2.5, true, now), c: rec(9, null, now - L.COST_MAX_AGE_MS - 5) };
+  assert.deepEqual(L.costTotal(["a", "b"], map, now), { usd: 3.5, known: 2, count: 2 });
+  assert.equal(L.totalLabel(L.costTotal(["a", "b"], map, now)), "$3.500 total");
+  assert.equal(L.totalLabel(L.costTotal(["a", "b", "z"], map, now)), "$3.500 total · partial 2/3");
+  assert.equal(L.totalLabel(L.costTotal(["c", "z"], map, now)), "", "nothing known: no total");
+  assert.equal(L.totalLabel(L.costTotal([], map, now)), "");
+  assert.ok(L.costAddr("t5") && L.costAddr("a@b:c-1.x") && !L.costAddr("../x") && !L.costAddr("a/b") && !L.costAddr(".h") && !L.costAddr("") && !L.costAddr(null));
+});
+await test("cost: known cost on the strip, dimmed; unknown shows nothing; sub marker; stale, malformed ignored", async () => withClock(async (c) => {
+  reset();
+  const top = view("top", { manager: "t1" }); state.agents = [ag("t1", "idle"), ag("t2", "working"), ag("t3", "working"), ag("t4", "done"), ag("t5", "idle")];
+  state.terms = state.agents.map((a) => T(a.address, a.status));
+  state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" };
+  state.files[`${CD}/t1.json`] = cfile(99); // the Conductor: never read, never counted
+  state.files[`${CD}/t2.json`] = cfile(29.79, { sub: true });
+  state.files[`${CD}/t3.json`] = "{not json";
+  state.files[`${CD}/t4.json`] = JSON.stringify({ v: 1, usd: 5, updated_ms: c.t - 2 * 3600 * 1000 }); // stale
+  // t5: no file at all
+  state.calls.length = 0; top.use(); await top.v.syncCosts();
+  assert.deepEqual(state.calls.filter((x) => x[0] === "read").map((x) => x[1]).sort(), [2, 3, 4, 5].map((i) => `${CD}/t${i}.json`), "one read per strip, never the Conductor");
+  assert.deepEqual(Object.keys(state.shared["conductor.costs"]).sort(), ["t2", "t4"], "malformed and missing dropped at parse; the stale one is parsed but never shown");
+  const w = view("strips", { manager: "t1" }); w.use();
+  const txt = w.draw();
+  assert.match(txt, /\$29\.790 \(sub\)/); assert.ok(!/\$5\./.test(txt), "stale ignored"); assert.ok(!/\$99/.test(txt), "the Conductor's cost is not shown");
+  assert.equal((txt.match(/\$\d/g) || []).length, 1, "only t2 has a cost: the others show nothing");
+  assert.ok(w.rec.calls.some(([k, a]) => k === "opacity" && a[0] < 1), "dimmed");
+  const tt = top.draw(); assert.match(tt, /\$29\.790 total · partial 1\/4/); assert.ok(!/\$99/.test(tt));
+  // all strips known: complete
+  for (const i of [3, 4, 5]) state.files[`${CD}/t${i}.json`] = cfile(i / 10);
+  top.use(); await top.v.syncCosts(); assert.match(top.draw(), /\$30\.990 total(?! · partial)/); assert.ok(!/partial/.test(top.draw()));
+  const w2 = view("strips", { manager: "t1" }); w2.use(); const t2 = w2.draw(); assert.match(t2, /\$0\.300/); assert.match(t2, /\$0\.500/);
+  // time passes: everything older than an hour disappears from strips and the total without another read
+  c.t += 3600 * 1000 + 5000;
+  const later = view("strips", { manager: "t1" }); later.use(); assert.ok(!/\$\d/.test(later.draw()), "stale at render time"); assert.ok(!/total/.test(top.draw()), "no total when nothing is known");
+}));
+await test("cost: nothing known shows no total and no numbers; missing/unreadable files; terminal gone; opt-out; demo; hidden layout", async () => withClock(async (c) => {
+  reset();
+  const top = view("top", { manager: "t1" }); state.agents = [ag("t2", "working")]; state.terms = [T("t2", "working")];
+  state.files[`${CD}/t2.json`] = new Error("EACCES"); top.use(); await top.v.syncCosts();
+  assert.deepEqual(state.shared["conductor.costs"] ?? {}, {}); assert.ok(!/total|\$/.test(top.draw()));
+  state.files[`${CD}/t2.json`] = cfile(1); top.use(); await top.v.syncCosts(); assert.match(top.draw(), /\$1\.000 total/);
+  state.agents = []; top.use(); await top.v.syncCosts(); assert.deepEqual(state.shared["conductor.costs"], {}, "terminal gone: entry dropped"); assert.ok(!/total/.test(top.draw()));
+  // opt out
+  state.agents = [ag("t2", "working")]; const off = view("top", { costs: false }); state.agents = [ag("t2", "working")]; state.shared["conductor.costs"] = { t2: { usd: 3, sub: null, at: c.t } };
+  state.calls.length = 0; assert.ok(!/total/.test(off.draw())); assert.equal(state.calls.filter((x) => x[0] === "read" && x[1].includes("costs")).length, 0);
+  // custom folder
+  const cd = view("top", { cost_dir: "/custom/c" }); state.agents = [ag("t2", "working")]; state.files["/custom/c/t2.json"] = cfile(2); cd.use(); await cd.v.syncCosts(); assert.equal(state.shared["conductor.costs"].t2.usd, 2);
+  // unsafe addresses are never turned into paths
+  state.agents = [ag("../etc", "working"), ag("a/b", "working")]; cd.use(); state.calls.length = 0; await cd.v.syncCosts(); assert.equal(state.calls.filter((x) => x[0] === "read").length, 0);
+  // unchanged answer: no shared write (no redraw)
+  state.agents = [ag("t2", "working")]; cd.use(); await cd.v.syncCosts(); let sets = 0; const orig = state.shared; state.shared = new Proxy(orig, { set: (o, k, v) => { if (k === "conductor.costs") sets++; o[k] = v; return true; } }); await cd.v.syncCosts(); assert.equal(sets, 0); state.shared = orig;
+  // loop: reads only while the layout is shown
+  reset({ role: "top" }); state.agents = [ag("t2", "working")]; state.shared.layout = "main"; const hid = new Mod(); const hm = mkCx(); hid.init({}, hm.cx); await settle();
+  assert.equal(state.calls.filter((x) => x[0] === "read").length, 0, "hidden: no reads"); assert.deepEqual(hm.sleeps, [10000]);
+  reset({ role: "top" }); state.agents = [ag("t2", "working")]; const shown = new Mod(); const sm = mkCx(); shown.init({}, sm.cx); await settle(); assert.deepEqual(sm.sleeps, [L.COST_POLL_MS]); assert.ok(L.COST_POLL_MS >= 15000);
+  // demo never reads
+  reset({ role: "top", demo: true }); const dm = new Mod(); const dmm = mkCx(); dm.init({}, dmm.cx); await settle(); assert.equal(state.calls.filter((x) => x[0] === "read").length, 0);
+}));
+await test("cost: no content in the contract, no cost code runs during render", () => {
+  const src = readFileSync(join(here, "../mods/conductor-board/main.js"), "utf8");
+  const render = src.slice(src.indexOf("  strip(t, n, r, isSel, cx)"), src.indexOf("  strips(t, cx)")); assert.ok(!/readTextFile|exec\(|\bhc\(|run\(/.test(render), "strip render is pure");
+});
 
 await test("no private paths or pi imports in the shipped mod", () => {
   for (const f of ["main.js", "logic.js"]) { const s = readFileSync(join(here, "../mods/conductor-board", f), "utf8"); assert.ok(!/\/Users\/|@mariozechner|pi-coding-agent|from "pi/.test(s), f); assert.ok(!/watchFolder\(/.test(s) && !/setTimeout|setInterval/.test(s), f + " forbidden api"); }

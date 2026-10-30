@@ -30,7 +30,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, spaces, props, run, theme, shared, setShared, setAgentOrder, exec, home, readTextFile } from "herdr";
-import { workingDescendants, effectiveStatus, Limiter, VoiceTrack, effVoice, voicePollMs, SafeRunner, Debounce, REFRESH_MS, SELECT_DEBOUNCE_MS, resolveManager, MANAGER_POLL_MS, MANAGER_IDLE_POLL_MS, NO_MANAGER_NOTE, interruptCmd, InterruptGate, parseVoice, INTERRUPT_ERROR_MS, NO_INTERRUPT_NOTE } from "./logic.js";
+import { workingDescendants, effectiveStatus, Limiter, VoiceTrack, effVoice, voicePollMs, SafeRunner, Debounce, REFRESH_MS, SELECT_DEBOUNCE_MS, resolveManager, MANAGER_POLL_MS, MANAGER_IDLE_POLL_MS, NO_MANAGER_NOTE, interruptCmd, InterruptGate, parseVoice, INTERRUPT_ERROR_MS, NO_INTERRUPT_NOTE, COST_POLL_MS, COST_MAX_READS, costAddr, parseCost, costLabel, costTotal, totalLabel } from "./logic.js";
 
 const BAYS = [
   { key: "blocked", label: "NEEDS YOU" },
@@ -38,6 +38,7 @@ const BAYS = [
   { key: "done", label: "REVIEW READY" },
   { key: "idle", label: "IDLE" },
 ];
+const COSTS = "conductor.costs"; // { address: {usd, sub, at} } parsed from the optional cost files; freshness is re-checked at render
 const SEL = "conductor.sel"; // selected agent address
 const OPEN = "conductor.open"; // address embedded in the right panel, or null
 const MGR = "conductor.mgr"; // resolved manager {terminal, source, note}
@@ -71,6 +72,8 @@ const waveOn = () => props()?.wave !== false;
 const liveOn = () => props()?.live !== false; // props.live=false (install.sh --no-live-pane): the pane embeds only on an explicit Open
 const layoutActive = () => shared("layout") === "conductor";
 const mgrPath = () => props()?.session_file || `${home()}/.config/conductor/session.json`;
+const costDir = () => props()?.cost_dir || `${home()}/.config/conductor/costs`;
+const costsOn = () => props()?.costs !== false && !isDemo();
 const layoutPath = () => props()?.layout_file || `${home()}/.config/herdr-app/layouts/conductor.json`;
 
 const isDemo = () => props()?.demo === true;
@@ -194,6 +197,35 @@ export default class ConductorBoard extends View {
     if (role === "head") this.initControl(cx); // the head is always mounted (the stack hides "detail" while a terminal shows)
     if (role === "host" && waveOn()) this.initVoice(cx);
     if (role === "host" && !isDemo()) this.initManager(cx);
+    if (role === "top" && costsOn()) this.initCosts(cx);
+  }
+
+  // ---------- session costs (optional per-terminal files, numbers only) ----------
+  // One loop (= one in flight), every 15 s while this layout is shown, one small readTextFile per live non-Conductor
+  // session, no exec, never during render. Result goes to shared state so strips and the top total redraw together.
+  initCosts(cx) {
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const active = layoutActive();
+        if (active) {
+          try { await this.syncCosts(); } catch { /* keep the last answer; stale entries die at render */ }
+        }
+        await cx.sleep(active ? COST_POLL_MS : MANAGER_IDLE_POLL_MS);
+      }
+    });
+  }
+
+  async syncCosts() {
+    const mgr = this.manager();
+    const addrs = agents().map((a) => a.address).filter((a) => a !== mgr && costAddr(a)).slice(0, COST_MAX_READS);
+    const next = {};
+    for (const a of addrs) {
+      let text = null;
+      try { text = await readTextFile(`${costDir()}/${a}.json`); } catch { text = null; }
+      const rec = parseCost(text);
+      if (rec) next[a] = rec;
+    }
+    if (JSON.stringify(next) !== JSON.stringify(shared(COSTS) ?? {})) setShared(COSTS, next);
   }
 
   // ---------- manager (Conductor): resolved from the optional file, pinned in the left slot ----------
@@ -425,12 +457,15 @@ export default class ConductorBoard extends View {
   // ---------- top and foot bars ----------
   top(t) {
     const t2 = pal(t);
-    const n = this.counts(ordered(this.manager()));
+    const rows = ordered(this.manager());
+    const n = this.counts(rows);
+    const total = costsOn() ? totalLabel(costTotal(rows.map((r) => r.a.address), shared(COSTS), Date.now())) : ""; // strips only: the Conductor is excluded
     return h_flex().size_full().bg(t.chrome).pl(76).pr(16).gap(12).items_center().border_b(1).border_color(t.selected)
       .child(div().flex_none().text_size(13).font_bold().text_color(t2.cursor).child("◆ herdr"))
       .child(div().flex_none().text_size(13).text_color(t.muted).child("conductor"))
       .when(isDemo(), (el) => el.child(this.chip(t, "DEMO DATA · dev only", t2.caramel)))
       .child(div().flex_1())
+      .when(!!total, (el) => el.child(div().flex_none().text_size(11).text_color(t.muted).opacity(0.75).child(total)))
       .child(div().id("conductor-new").flex_none().px(8).py(2).rounded(6).cursor_pointer().text_size(11).bg(t.selected).border(1).border_color(t.selected).text_color(t.foreground)
         .hover((s) => s.border_color(t.accent)).on_click(() => newSession(this.manager())).child("+ New session"))
       .child(this.chip(t, `${n.blocked} blocked`, n.blocked ? t.blocked : t.muted))
@@ -462,6 +497,7 @@ export default class ConductorBoard extends View {
     const thread = blocked
       ? [[kind ? `${kind} dialog` : "dialog", t.blocked], [`· ${place(a)}`, t.muted]]
       : [[place(a), t.muted], [term?.turn ? `· turn ${term.turn}` : "", t.muted]];
+    const cost = costsOn() ? costLabel(shared(COSTS)?.[a.address], now) : "";
     const event = ms == null ? "" : `${happened(a.own ?? a.status)} ${age(ms)} ago`; // the agent's own status; subagents are the separate hint
     return h_flex().id(`cs-${a.address}`).when(!blocked, (el) => el.w_full()).flex_none().rounded(8).overflow_hidden()
       .when(blocked, (el) => el.ml(8)) // the mock tilts blocked strips; native cannot rotate, so they step in
@@ -479,6 +515,7 @@ export default class ConductorBoard extends View {
         .child(h_flex().pl(28).child(this.runs(thread)))
         .child(h_flex().pl(28).gap(8).items_center()
           .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(event))
+          .when(!!cost, (el) => el.child(div().flex_none().text_size(10).text_color(t.muted).opacity(0.7).child(cost)))
           .when(a.subs > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.working).child(`${a.subs} subagent${a.subs === 1 ? "" : "s"} working`)))
           .child(div().flex_none().px(4).rounded(4).border(1).border_color(color).text_size(10).text_color(color).child(tag))));
   }

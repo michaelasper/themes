@@ -275,3 +275,38 @@ export class InterruptGate {
     }
   }
 }
+
+// ---- per-session cost: optional, generic file contract (README "Session cost files") ----
+export const COST_POLL_MS = 15000; // while the layout is shown; one sequential read per session, no exec
+export const COST_MAX_AGE_MS = 3600 * 1000; // an entry older than this is ignored (the writer heartbeats every 10 min)
+export const COST_MAX_BYTES = 1024;
+export const COST_MAX_READS = 64;
+const COST_MAX_USD = 1e6;
+// A terminal address becomes a file name: only plain tokens, never a path.
+export const costAddr = (a) => typeof a === "string" && ADDR.test(a) && !a.startsWith(".");
+
+// Strict parse of {v:1, usd, sub?, updated_ms}. sub is true/false only when the writer knew it, else null. Anything else: null.
+export function parseCost(text) {
+  if (typeof text !== "string" || text.length === 0 || text.length > COST_MAX_BYTES) return null;
+  try {
+    const j = JSON.parse(text);
+    if (!j || typeof j !== "object" || j.v !== 1 || typeof j.usd !== "number" || !Number.isFinite(j.usd) || j.usd < 0 || j.usd > COST_MAX_USD) return null;
+    if (typeof j.updated_ms !== "number" || !Number.isFinite(j.updated_ms) || j.updated_ms < 0) return null;
+    return { usd: j.usd, sub: typeof j.sub === "boolean" ? j.sub : null, at: j.updated_ms };
+  } catch {
+    return null;
+  }
+}
+// Known = parsed, not older than an hour, not from the future. Unknown shows nothing: never a stale or invented number.
+export const costKnown = (rec, now) => !!rec && typeof rec.usd === "number" && Number.isFinite(rec.usd) && now - rec.at <= COST_MAX_AGE_MS && rec.at - now <= 60000;
+// The footer's own format: "$29.790" and " (sub)" when it is a subscription.
+export const fmtCost = (usd, sub) => `$${usd.toFixed(3)}${sub === true ? " (sub)" : ""}`;
+// Like the footer, a session with no cost that is not a subscription shows nothing.
+export const costLabel = (rec, now) => (costKnown(rec, now) && (rec.usd > 0 || rec.sub === true) ? fmtCost(rec.usd, rec.sub) : "");
+// Total over the given addresses (the board's strips): { usd, known, count }; known < count means partial.
+export function costTotal(addrs, map, now) {
+  let usd = 0, known = 0;
+  for (const a of addrs) { const r = map?.[a]; if (costKnown(r, now)) { usd += r.usd; known++; } }
+  return { usd, known, count: addrs.length };
+}
+export const totalLabel = (t) => (t.known > 0 ? `${fmtCost(t.usd)} total${t.known < t.count ? ` · partial ${t.known}/${t.count}` : ""}` : "");
