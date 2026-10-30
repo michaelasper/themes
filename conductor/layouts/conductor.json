@@ -63,7 +63,7 @@
                 }
               },
               "size": {
-                "px": 256
+                "px": 300
               },
               "window_drag": true
             },
@@ -128,14 +128,28 @@
               }
             },
             {
-              "id": "detail",
-              "type": "block",
-              "content": {
-                "mod": "conductor-board",
-                "props": {
-                  "role": "detail"
+              "id": "right-body",
+              "type": "stack",
+              "active": "detail",
+              "children": [
+                {
+                  "id": "detail",
+                  "type": "block",
+                  "content": {
+                    "mod": "conductor-board",
+                    "props": {
+                      "role": "detail"
+                    }
+                  }
+                },
+                {
+                  "id": "session",
+                  "type": "block",
+                  "content": {
+                    "agent": "focused"
+                  }
                 }
-              }
+              ]
             }
           ]
         }
