@@ -46,4 +46,6 @@ Keys work after clicking the centre column: `1`-`8` select, `j`/`k` or arrows mo
 
 ## Verified and not
 
+**+ New session** (top bar button, or `n` with the board focused) opens a plain interactive `pi` in a new tab through the app's generic `tab.new` command (argv `["pi"]`, in the manager's folder when known). It does nothing in demo mode and ignores repeat clicks within 2 seconds. The click and the `n` key are unverified: `herdr-app check` passes, but the command was never run.
+
 Verified: `herdr-app check` passes; installed with no entries in `herdr-app status` errors; the layout renders and switches back; the empty-bay and idle-strip states rendered in a real screenshot. Not verified: clicks, key handling, blocked and review-ready strips (no such agents were available), the review reader's git output, `layout.select` switching of the right pane, and the pulse animations in motion.

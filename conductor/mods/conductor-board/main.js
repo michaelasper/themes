@@ -106,6 +106,16 @@ function wantsPeek(row) {
   return row.a.status === "working" || row.a.status === "idle" || shared(PEEK) === row.a.address;
 }
 
+// "+ New session": a plain interactive pi in a new tab via the app's generic tab.new command (argv, no shell).
+// Starts in the manager's folder when known. Click or press n on the board; ignored in demo and within 2s of the last start.
+let lastNew = 0;
+function newSession(mgr) {
+  if (isDemo() || Date.now() - lastNew < 2000) return;
+  lastNew = Date.now();
+  const folder = termMap().get(mgr)?.cwd;
+  run("tab.new", { name: "new pi", argv: ["pi"], ...(folder ? { folder } : {}) });
+}
+
 export default class ConductorBoard extends View {
   init(_props, cx) {
     this.h = cx.focus_handle();
@@ -202,6 +212,8 @@ export default class ConductorBoard extends View {
       .child(div().flex_none().text_size(13).text_color(t.muted).child("conductor"))
       .when(isDemo(), (el) => el.child(this.chip(t, "DEMO DATA · dev only", t2.caramel)))
       .child(div().flex_1())
+      .child(div().id("conductor-new").flex_none().px(8).py(2).rounded(6).cursor_pointer().text_size(11).bg(t.selected).border(1).border_color(t.selected).text_color(t.foreground)
+        .hover((s) => s.border_color(t.accent)).on_click(() => newSession(this.manager())).child("+ New session"))
       .child(this.chip(t, `${n.blocked} blocked`, n.blocked ? t.blocked : t.muted))
       .child(this.chip(t, `${n.working} working`, n.working ? t.working : t.muted))
       .child(this.chip(t, `${n.done} review`, n.done ? t.done : t.muted))
@@ -210,7 +222,7 @@ export default class ConductorBoard extends View {
   foot(t) {
     const hint = (k, text) => h_flex().gap(4).items_center().child(this.keycap(t, k)).child(div().text_size(11).text_color(t.muted).child(text));
     return h_flex().size_full().bg(t.chrome).px(16).gap(12).items_center().border_t(1).border_color(t.selected)
-      .child(hint("1-8", "select")).child(hint("j/k", "move")).child(hint("g", "open session")).child(hint("click", "focus board first"));
+      .child(hint("1-8", "select")).child(hint("j/k", "move")).child(hint("g", "open session")).child(hint("n", "new session")).child(hint("click", "focus board first"));
   }
 
   // ---------- strips ----------
@@ -286,6 +298,7 @@ export default class ConductorBoard extends View {
         else if (k === "j" || k === "down") move(1);
         else if (k === "k" || k === "up") move(-1);
         else if (k === "g" || k === "enter") open();
+        else if (k === "n") newSession(this.manager());
       })
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().px(12).pt(8).pb(12).gap(4)
         .children(body)
