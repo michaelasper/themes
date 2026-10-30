@@ -1,21 +1,33 @@
 // Conductor board: flight-strip bays for every agent, plus the right-hand reader.
-// One mod, six roles chosen by props().role:
+// One mod, seven roles chosen by props().role:
 //   "top"    window top bar: brand, layout name, status chips
 //   "foot"   window bottom bar: key hints
 //   "host"   left column header: manager state + recent changes digest
 //   "strips" (default) the bays: Needs you / Working / Review ready / Idle
 //   "head"   right column header for the selected agent
-//   "detail" right column body: blocked dialog, or review reader (done)
+//   "detail" right column body: blocked dialog, review reader (done), or a read-only text snapshot (working/idle)
+//   "slot"   placeholder shown in the manager slot when no manager terminal is configured
 // props().manager: the manager's own terminal (e.g. "t1"); kept out of the bays.
 // Everything shown comes from agents(), terminals(), panes(), exec (git, read-only)
 // and `hc read`. Nothing is simulated, EXCEPT when the layout sets props.demo = true
 // (DEV ONLY, off by default, never written by install.sh unless --demo is passed):
 // then fixed sample strips are shown under a visible "DEMO DATA" chip so every strip
 // state can be screenshotted. Demo mode never runs commands against real terminals.
+//
+// Voice waveform (host role): an OPTIONAL, generic file contract, see README "Voice state file". The file
+// is read with readTextFile on a gentle poll (250 ms while someone talks, 1 s otherwise); a missing,
+// unreadable, malformed or stale file shows a flat line and "voice offline". props().voice_file overrides the
+// default path. Nothing here knows who writes the file. props.wave=false switches it off.
+//
+// SAFETY (see README "Safeguards"): this mod never embeds a terminal, never calls agent.focus on its own,
+// never runs a command during render, and runs commands only through SafeRunner (one at a time, timeout,
+// per-minute cap, per-key interval, failure back-off), debounced after a selection change, and only while
+// its layout is the one shown. props.peek=false switches off all reading of other sessions' text.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, spaces, focused, props, run, theme, shared, setShared, setAgentOrder, exec, hc } from "herdr";
+import { agents, terminals, panes, spaces, props, run, theme, shared, setShared, setAgentOrder, exec, hc, home, readTextFile } from "herdr";
+import { VoiceTrack, effVoice, voicePollMs, SafeRunner, Debounce, REFRESH_MS, SELECT_DEBOUNCE_MS } from "./logic.js";
 
 const BAYS = [
   { key: "blocked", label: "NEEDS YOU" },
@@ -24,7 +36,6 @@ const BAYS = [
   { key: "idle", label: "IDLE" },
 ];
 const SEL = "conductor.sel"; // selected agent address
-const PEEK = "conductor.peek"; // address whose terminal the user asked to see
 
 // The mock's palette, from theme() where the theme has the colour, else the closest ANSI slot.
 const pal = (t) => ({
@@ -38,6 +49,15 @@ const pal = (t) => ({
   soft: t.ansi8,
   selbg: t.selection,
 });
+
+// ---- voice state (optional file contract) ----
+const BARS = 24;
+const WAVE_H = 48;
+const DEMO_PHASES = [["speaking", 6000], ["idle", 2500], ["listening", 6000], ["transcribing", 3000], ["idle", 2500]];
+const voicePath = () => props()?.voice_file || `${home()}/.pi/agent/pi-speak/state.json`;
+const waveOn = () => props()?.wave !== false;
+const peekOn = () => props()?.peek !== false;
+const layoutActive = () => shared("layout") === "conductor";
 
 const isDemo = () => props()?.demo === true;
 // Sample data for screenshots only. Names are generic and invented.
@@ -100,12 +120,6 @@ function selected(rows) {
   const want = shared(SEL);
   return rows.find((r) => r.a.address === want) ?? rows[0] ?? null;
 }
-// Which right-hand child shows: the live terminal for working/idle, or when asked for.
-function wantsPeek(row) {
-  if (!row) return false;
-  return row.a.status === "working" || row.a.status === "idle" || shared(PEEK) === row.a.address;
-}
-
 // "+ New session": a plain interactive pi in a new tab via the app's generic tab.new command (argv, no shell).
 // Starts in the manager's folder when known. Click or press n on the board; ignored in demo and within 2s of the last start.
 let lastNew = 0;
@@ -119,70 +133,141 @@ function newSession(mgr) {
 export default class ConductorBoard extends View {
   init(_props, cx) {
     this.h = cx.focus_handle();
-    this.applied = null;
     this.git = {}; // address -> { at, status, diff, cwd, error }
     this.tail = {}; // address -> { at, text }
     const role = props()?.role ?? "strips";
-    if (role === "strips") {
-      cx.timer.every(2000, () => this.syncRight());
-      this.syncRight();
-    }
-    if (role === "detail" && isDemo()) this.refresh(cx);
-    else if (role === "detail") {
-      cx.timer.every(8000, (cx) => this.refresh(cx));
-      this.refresh(cx);
-    }
     cx.timer.every(30000, (cx) => cx.notify()); // ages
+    if (role === "detail") this.initDetail(cx);
+    if (role === "host" && waveOn()) this.initVoice(cx);
+  }
+
+  // ---------- voice ----------
+  // One file read per poll (>= 250 ms), no folder watcher, no redraw unless the picture would change.
+  // Redraws are therefore at most ~4 per second, and only while someone talks or listens.
+  initVoice(cx) {
+    this.track = new VoiceTrack(BARS);
+    this.phase = 0;
+    if (isDemo()) {
+      const next = (cx) => {
+        this.phase = (this.phase + 1) % DEMO_PHASES.length;
+        cx.notify();
+        cx.timer.after(DEMO_PHASES[this.phase][1], next);
+      };
+      cx.timer.after(DEMO_PHASES[0][1], next);
+      return;
+    }
+    const file = voicePath();
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const active = layoutActive();
+        if (active) {
+          try {
+            this.track.apply(await readTextFile(file));
+          } catch {
+            this.track.apply(null); // unreadable: offline
+          }
+          if (this.track.changed(Date.now())) cx.notify();
+        }
+        await cx.sleep(voicePollMs(effVoice(this.track.last, Date.now()), active));
+      }
+    });
+  }
+
+  // Heights come from the rolling level history, eased natively between updates.
+  // Demo: heights loop natively with no script. Idle/offline: a flat muted line.
+  wave(t) {
+    const t2 = pal(t);
+    const demo = isDemo();
+    const v = demo ? { state: DEMO_PHASES[this.phase ?? 0][0], level: 0 } : effVoice(this.track?.last ?? null, Date.now());
+    const color = { speaking: t.accent, listening: t.working, transcribing: t2.caramel }[v.state] ?? t.muted;
+    const active = v.state !== "idle" && v.state !== "offline";
+    const label = demo ? `demo · ${v.state}` : v.state === "offline" ? "voice offline" : v.state;
+    const hist = this.track?.hist ?? [];
+    const bars = [];
+    for (let i = 0; i < BARS; i++) {
+      let bar = div().flex_1().rounded(2).bg(color);
+      if (!active) bar = bar.h(3).opacity(0.45);
+      else if (demo && v.state === "transcribing") bar = bar.h(3 + (i % 3) * 3).loop("opacity", { from: 0.3, to: 1, period: 700 + (i % 5) * 90 });
+      else if (demo) bar = bar.h(10).loop("height", { from: 4, to: 10 + ((i * 37) % 38), period: 420 + ((i * 53) % 300) });
+      else if (v.state === "transcribing") bar = bar.h(3 + (i % 3) * 3).loop("opacity", { from: 0.3, to: 1, period: 700 + (i % 5) * 90 });
+      else bar = bar.h(3 + Math.round((hist[i] ?? 0) * (WAVE_H - 3))).transition("height", 200);
+      bars.push(bar);
+    }
+    return v_flex().gap(4)
+      .child(h_flex().h(WAVE_H).items_center().gap(3).children(bars))
+      .child(h_flex().gap(8).items_center()
+        .child(div().text_size(11).text_color(active ? color : t.muted).child(label))
+        .when(demo, (el) => el.child(this.chip(t, "DEMO", t2.caramel))));
   }
 
   manager() {
     return props()?.manager || null;
   }
 
-  // Keeps the right stack on the child the selection needs. layout.select touches only this layout.
-  syncRight() {
-    if (isDemo()) { // demo never focuses terminals; it only keeps this layout's right stack on the detail view
-      if (this.applied !== "detail") { this.applied = "detail"; run("layout.select", { stack: "right-stack", child: "detail" }); }
-      return;
-    }
-    const row = selected(ordered(this.manager()));
-    const child = wantsPeek(row) ? "peek" : "detail";
-    if (child === "peek" && row && focused()?.agent !== row.a.address) run("agent.focus", { terminal: row.a.address });
-    if (this.applied !== child) {
-      this.applied = child;
-      run("layout.select", { stack: "right-stack", child });
-    }
+  // The one way into a session: a user click or key, and the app's own peek (one terminal, over the layout,
+  // with keep-as-tab and close). The board never embeds a terminal itself and never moves focus on a timer.
+  open(address) {
+    if (!address || isDemo()) return;
+    run("terminal.peek", { terminal: address });
   }
 
   choose(address) {
-    setShared(PEEK, null);
-    setShared(SEL, address);
-    this.syncRight();
+    setShared(SEL, address); // render only; the preview follows after a debounce (see tickDetail)
   }
 
-  // Read-only: git status/diff for the agent's folder, the dialog's visible text for a blocked one.
-  refresh(cx) {
+  // ---------- detail previews (the only place that runs commands) ----------
+  // Every 500 ms a cheap check: has the selection settled for 400 ms, or is the cached preview older than its
+  // interval? If so ONE read-only command batch runs through SafeRunner. Nothing runs in render or click handlers.
+  initDetail(cx) {
+    this.runner = new SafeRunner({ now: Date.now, sleep: (ms) => cx.sleep(ms), timeoutMs: 5000, maxPerMinute: 12 });
+    this.debounce = new Debounce(SELECT_DEBOUNCE_MS);
+    this.watched = null; // address:status of the row the preview is for
+    if (isDemo()) { this.demoFill(); return; }
+    cx.timer.every(500, (cx) => this.tickDetail(cx));
+  }
+
+  demoFill() {
     const row = selected(ordered(this.manager()));
-    if (!row) return;
-    if (isDemo()) { this.tail[row.a.address] = { text: DEMO_TAIL }; this.git[row.a.address] = { cwd: row.term.cwd, ...DEMO_GIT }; return; }
+    if (row) { this.tail[row.a.address] = { text: DEMO_TAIL }; this.git[row.a.address] = { cwd: row.term.cwd, ...DEMO_GIT }; }
+  }
+
+  tickDetail(cx) {
+    if (!layoutActive()) return;
+    const row = selected(ordered(this.manager()));
+    const key = row ? `${row.a.address}:${row.a.status}` : null;
+    if (key !== this.watched) { this.watched = key; this.debounce.touch(Date.now()); }
+    if (!row || this.runner.inflight) return;
+    if (this.debounce.pending() && !this.debounce.due(Date.now())) return;
+    this.debounce.clear();
+    const status = row.a.status;
+    const wantsText = status !== "done" && peekOn();
+    if (!wantsText && status !== "done") return;
     const addr = row.a.address;
     const cwd = row.term?.cwd ?? panes().find((p) => p.terminal === addr)?.cwd;
     const on = spaces().find((s) => s.id === row.a.space)?.machine ?? null;
+    const fresh = (e, ms) => e && Date.now() - e.at < ms;
+    if (fresh(status === "done" ? this.git[addr] : this.tail[addr], REFRESH_MS[status] ?? 15000)) return;
     cx.spawn(async (cx) => {
-      try {
-        if (row.a.status === "done" && cwd) {
-          const st = await exec("git", ["-C", cwd, "status", "--short"], { on });
-          const df = await exec("git", ["-C", cwd, "diff", "--stat"], { on });
-          this.git[addr] = { at: Date.now(), cwd, status: st.code === 0 ? st.stdout : null, diff: df.code === 0 ? df.stdout : null, error: st.code === 0 ? null : st.stderr.trim() };
-        }
-        if (row.a.status === "blocked") {
-          const r = await hc(["read", addr, "--lines", "20"]);
-          this.tail[addr] = { at: Date.now(), text: r.code === 0 ? r.stdout : "" };
-        }
-      } catch (e) {
-        this.git[addr] = { at: Date.now(), cwd, error: String(e?.message ?? e) };
+      let changed = false;
+      if (wantsText) {
+        const r = await this.runner.run(`read:${addr}`, REFRESH_MS[status] ?? 15000, () => hc(["read", addr, "--lines", "30"]));
+        if (r.ran) { this.tail[addr] = { at: Date.now(), text: r.ok && r.value.code === 0 ? r.value.stdout : "" }; changed = true; }
       }
-      cx.notify();
+      if (status === "done" && cwd) {
+        const r = await this.runner.run(`git:${addr}`, REFRESH_MS.done, async () => {
+          // --no-optional-locks: a status read must never take the index lock an agent's own git may need.
+          const st = await exec("git", ["--no-optional-locks", "-C", cwd, "status", "--short"], { on });
+          const df = await exec("git", ["--no-optional-locks", "-C", cwd, "diff", "--stat"], { on });
+          return { st, df };
+        });
+        if (r.ran) {
+          this.git[addr] = r.ok
+            ? { at: Date.now(), cwd, status: r.value.st.code === 0 ? r.value.st.stdout : null, diff: r.value.df.code === 0 ? r.value.df.stdout : null, error: r.value.st.code === 0 ? null : r.value.st.stderr.trim() }
+            : { at: Date.now(), cwd, error: r.error };
+          changed = true;
+        }
+      }
+      if (changed) cx.notify();
     });
   }
 
@@ -284,12 +369,7 @@ export default class ConductorBoard extends View {
       const i = Math.max(0, rows.findIndex((r) => r.a.address === cur?.a.address));
       this.choose(rows[(i + d + rows.length) % rows.length].a.address);
     };
-    const open = () => {
-      if (!cur || isDemo()) return;
-      setShared(PEEK, cur.a.address);
-      run("agent.focus", { terminal: cur.a.address });
-      this.syncRight();
-    };
+    const open = () => this.open(cur?.a.address);
     return v_flex().id("conductor-strips").size_full().bg(t.surface).track_focus(this.h)
       .on_click(() => this.h.focus())
       .on_key_down((e) => {
@@ -325,9 +405,17 @@ export default class ConductorBoard extends View {
     return v_flex().size_full().bg(t.surface).px(16).pt(32).pb(8).gap(8)
       .child(div().text_size(15).font_bold().text_color(t.accent).child("Jarvis"))
       .child(div().truncate().text_size(11).text_color(t2.caramel).child(mgr || isDemo() ? `${state === "unknown" ? "no status reported" : state}${msgOf(term) ? ` · ${msgOf(term)}` : ""}` : "no manager terminal set"))
+      .when(waveOn(), (el) => el.child(this.wave(t)))
       .child(v_flex().px(12).py(8).rounded(8).bg(t.chrome).border_l(2).border_color(t2.cursor)
         .child(div().text_size(11).text_color(t2.soft).child(line))
         .children(recent.map((r) => div().truncate().text_size(11).text_color(r.a.status === "blocked" ? t.blocked : t.muted).child(`${label(r.a, r.term)} → ${r.a.status === "done" ? "review ready" : r.a.status} ${age(r.ms)} ago`))));
+  }
+
+  // ---------- manager slot placeholder (when no manager terminal is configured) ----------
+  slot(t) {
+    return v_flex().size_full().bg(t.surface).p(16).gap(4)
+      .child(div().text_size(13).text_color(t.foreground).child("No manager terminal set"))
+      .child(div().text_size(11).text_color(t.muted).child("Run install.sh --manager tN to show a terminal here. Nothing is embedded by default."));
   }
 
   // ---------- right header ----------
@@ -338,15 +426,13 @@ export default class ConductorBoard extends View {
     if (!row) return bar(h_flex().size_full().px(16).items_center().text_size(11).text_color(t.muted).child("Nothing selected"));
     const { a, term } = row;
     const color = t[a.status] ?? t.muted;
-    const peek = wantsPeek(row);
     const word = a.status === "done" ? "REVIEW READY" : a.status === "blocked" ? "NEEDS YOU" : a.status.toUpperCase();
     const name = term?.cwd ? base(term.cwd) : a.space_name;
     return bar(h_flex().size_full().px(16).gap(12).items_center())
       .child(v_flex().flex_1().min_w(0).justify_center()
         .child(div().truncate().text_size(11).text_color(t.muted).child(`${word} · ${name.toUpperCase()}`))
         .child(div().truncate().text_size(15).font_bold().text_color(t.accent).child(label(a, term))))
-      .when(peek && (a.status === "blocked" || a.status === "done"), (el) => el.child(this.button(t, `back-${a.address}`, "Back", () => { setShared(PEEK, null); this.syncRight(); })))
-      .when(!peek, (el) => el.child(this.button(t, `go-${a.address}`, "Go to session", () => { if (isDemo()) return; setShared(PEEK, a.address); run("agent.focus", { terminal: a.address }); this.syncRight(); }, a.status === "blocked")));
+      .child(this.button(t, `go-${a.address}`, "Go to session", () => this.open(a.address), a.status === "blocked"));
   }
 
   button(t, id, text, fn, hot) {
@@ -389,7 +475,11 @@ export default class ConductorBoard extends View {
         .child(this.section(t, "GIT DIFF --STAT (UNSTAGED)", !g ? "reading..." : g.error ? "-" : lines(g.diff) || "no unstaged changes"))
         .child(div().text_size(11).text_color(t.muted).child("Read-only git output. Verification badges and test results are not available here."));
     }
-    return wrap.child(div().text_size(13).text_color(t.muted).child("Live terminal is shown here."));
+    if (!peekOn()) return wrap.child(div().text_size(13).text_color(t.muted).child("Preview is off (peek=false). Use Go to session to open this terminal."));
+    const tail = (this.tail[addr]?.text ?? "").split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-16).join("\n");
+    return wrap
+      .child(this.section(t, `${a.status.toUpperCase()} · LAST LINES (READ-ONLY SNAPSHOT)`, tail || (this.tail[addr] ? "(empty)" : "reading...")))
+      .child(div().text_size(11).text_color(t.muted).child("A throttled text snapshot, not a live terminal. Go to session opens the real one."));
   }
 
   render(cx) {
@@ -400,6 +490,7 @@ export default class ConductorBoard extends View {
     if (role === "host") return this.host(t);
     if (role === "head") return this.head(t);
     if (role === "detail") return this.detail(t);
+    if (role === "slot") return this.slot(t);
     return this.strips(t, cx);
   }
 }

@@ -15,7 +15,7 @@ With no agents the centre shows "No agents running" and a one-line explanation.
 
 ## How it behaves
 
-- `blocked`: pulsing bar (native opacity loop 0.35-1 over 1400 ms), reader shows DIALOG (title and kind from the agent's own report) and the last 14 terminal lines via `hc read`; button "Go to session" runs `agent.focus` and shows the live terminal.
+- `blocked`: pulsing bar (native opacity loop 0.35-1 over 1400 ms), reader shows DIALOG (title and kind from the agent's own report) and the last terminal lines via a throttled `hc read`; button "Go to session" runs `terminal.peek`.
 - `working`: bar loops opacity 0.55-1 over 3200 ms; right shows the live terminal.
 - `done` (REVIEW READY): still; reader shows the last status message, `git status --short`, `git diff --stat` for the agent's folder (refreshed every 8 s), and a note that verification badges are not available.
 - `idle`: still; live terminal.
@@ -24,15 +24,15 @@ With no agents the centre shows "No agents running" and a one-line explanation.
 
 ## Built from
 
-- `layouts/conductor.json`: root `row`, `titlebar: none`, `theme: dr-pepper`, `background: canvas`, `padding 8`, `gap 8`, `preview: layouts/conductor.svg`. Children: column `host` (blocks `host-head` 132px with mod props `{role: host}`, and `manager` with `{"tab":"active"}`, which `install.sh` replaces by `{"terminal":"tN"}`), block `strips` (`role: strips`), column `right` (block `right-head` 40px `role: head`; `stack` `right-stack` active `detail` with blocks `detail` (`role: detail`) and `peek` (`{"agent":"focused"}`)). Stack changes use `layout.select {stack: "right-stack", child}`.
-- `mods/conductor-board/` (`main.js`, `mod.json` `{"place":"none"}`): one mod, four roles by `props().role`. Props: `manager` (terminal address kept off the board). Uses `agents()`, `terminals()` (`report.msg/kind`, `status_ms`, `turn`, `cwd`), `panes()`, `spaces()`, `focused()`, `theme()`, `shared("conductor.sel")`, `run("agent.focus")`, `run("layout.select")`, `exec("git", ["-C", cwd, ...])`, `hc(["read", t, "--lines", "20"])`, `setAgentOrder`, `.loop("opacity", ...)`. A 2 s timer reconciles the right stack; an 8 s timer refreshes git.
+- `layouts/conductor.json`: root `column` (top bar 36px, body row, foot 28px), `titlebar: none`, `theme: dr-pepper`, `preview: layouts/conductor.svg`. Body children: column `host` (weight 4, min 300; blocks `host-head` 256px `{role: host}` and `manager` `{role: slot}` placeholder, which `install.sh --manager tN` replaces by `{"terminal":"tN"}`), block `strips` (`role: strips`), column `right` (block `right-head` `role: head`, block `detail` `role: detail`). No terminal is embedded by default and the board never calls `agent.focus` or `layout.select`.
+- `mods/conductor-board/` (`main.js`, `logic.js`, `mod.json` `{"place":"none"}`): one mod, seven roles by `props().role`. Props: `manager`, `wave` (false disables the waveform), `peek` (false disables reading other sessions' text), `voice_file`, `demo`. Uses `agents()`, `terminals()`, `panes()`, `spaces()`, `theme()`, `shared`, `run("terminal.peek")`, `run("tab.new")`, `readTextFile` (voice file), `exec("git", ["--no-optional-locks", "-C", cwd, ...])`, `hc(["read", t, "--lines", "30"])`, `setAgentOrder`, `.loop(...)`, `.transition(...)`. All commands go through `SafeRunner` (see README Safeguards).
 - `themes/dr-pepper.json` colours by theme name (`chrome`, `surface`, `selected`, `blocked`, `working`, `done`, `accent`, ...). No images.
 
 ## Watch out
 
 - The `terminals()` status record's shape (`report`, `status_ms`) is read defensively; if absent, ages and messages are blank.
 - Keys need the centre column focused (click it); there is no global binding.
-- Selecting working/idle strips calls `agent.focus`, moving Herdr's focused agent.
+- The right pane shows a read-only text snapshot for working/idle agents, never a live terminal.
 - The strip count shown by numbers stops at 8; more are reachable with `j`/`k`.
 - Needs `git` on the agent's machine; remote spaces run git there through `exec(..., {on})`.
 - Not built: verification badges, test counts, summaries, voice waveform, authority tag, approve/hold, `cmd-k`.
