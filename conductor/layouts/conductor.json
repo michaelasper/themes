@@ -44,7 +44,7 @@
           "id": "host",
           "type": "column",
           "size": {
-            "px": 440
+            "weight": 4
           },
           "radius": 8,
           "background": "surface",
@@ -63,7 +63,7 @@
                 }
               },
               "size": {
-                "px": 190
+                "px": 256
               },
               "window_drag": true
             },
@@ -71,16 +71,14 @@
               "id": "manager",
               "type": "block",
               "content": {
-                "tab": "active",
-                "pane": {
-                  "gap": 0,
-                  "radius": 0,
-                  "background": "background",
-                  "lone": false
+                "mod": "conductor-board",
+                "props": {
+                  "role": "slot"
                 }
               }
             }
-          ]
+          ],
+          "min": 300
         },
         {
           "id": "strips",
@@ -88,7 +86,7 @@
           "size": {
             "weight": 5
           },
-          "min": 380,
+          "min": 320,
           "radius": 8,
           "background": "surface",
           "border": {
@@ -108,7 +106,7 @@
           "size": {
             "weight": 5
           },
-          "min": 320,
+          "min": 280,
           "radius": 8,
           "background": "surface",
           "border": {
@@ -130,29 +128,14 @@
               }
             },
             {
-              "id": "right-stack",
-              "type": "stack",
-              "active": "detail",
-              "children": [
-                {
-                  "id": "detail",
-                  "type": "block",
-                  "content": {
-                    "mod": "conductor-board",
-                    "props": {
-                      "role": "detail"
-                    }
-                  }
-                },
-                {
-                  "id": "peek",
-                  "type": "block",
-                  "background": "background",
-                  "content": {
-                    "agent": "focused"
-                  }
+              "id": "detail",
+              "type": "block",
+              "content": {
+                "mod": "conductor-board",
+                "props": {
+                  "role": "detail"
                 }
-              ]
+              }
             }
           ]
         }
