@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installs the Conductor layout into the Herdr app. Copies NEW files only; refuses to overwrite.
-#   ./install.sh [--manager tN] [--no-wave] [--no-peek] [--demo]
+#   ./install.sh [--manager tN] [--no-wave] [--no-live-pane] [--demo]
 # SWITCH TO THE main LAYOUT BEFORE uninstall.sh / install.sh (ctrl-shift-l, or ctrl-alt-shift-escape): never replace
 # files of the layout that is on screen.
 # --manager tN  fallback manager terminal, pinned in the left column when ~/.config/conductor/session.json names none
@@ -8,7 +8,9 @@
 #               The manager's strip is marked "this is the Conductor" and cannot be opened. Default: a placeholder message.
 # --session-file PATH  read the manager contract from PATH instead (CONDUCTOR_SESSION_FILE does the same).
 # --no-wave     no voice waveform and no voice-file reads (CONDUCTOR_NO_WAVE=1 does the same).
-# --no-peek     the right pane never reads other sessions' terminal text (CONDUCTOR_NO_PEEK=1 does the same).
+# --no-live-pane  the right pane does not follow the selection: a session is embedded only on Enter/g/Open
+#               (CONDUCTOR_NO_LIVE_PANE=1 does the same). Default: the selected session's terminal is shown (its PTY is
+#               resized to the pane while selected). --no-peek is accepted and ignored (nothing reads terminal text any more).
 # --demo        DEV ONLY: installs with props.demo=true, so the board shows invented sample strips
 #               under a "DEMO DATA" chip (for screenshots). Never use for real work.
 set -eu
@@ -18,14 +20,15 @@ MANAGER=""
 SESSION_FILE=${CONDUCTOR_SESSION_FILE:-}
 DEMO=""
 NOWAVE=${CONDUCTOR_NO_WAVE:-}
-NOPEEK=${CONDUCTOR_NO_PEEK:-}
+NOLIVE=${CONDUCTOR_NO_LIVE_PANE:-}
 while [ $# -gt 0 ]; do
   case "$1" in
     --manager) MANAGER=${2:?--manager needs a terminal address}; shift 2 ;;
     --session-file) SESSION_FILE=${2:?--session-file needs a path}; shift 2 ;;
     --no-manager) MANAGER=""; shift ;;
     --no-wave) NOWAVE=1; shift ;;
-    --no-peek) NOPEEK=1; shift ;;
+    --no-live-pane) NOLIVE=1; shift ;;
+    --no-peek) shift ;;
     --demo) DEMO=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -40,9 +43,9 @@ fi
 mkdir -p "$HOME_DIR/layouts" "$HOME_DIR/mods/conductor-board"
 cp "$HERE/mods/conductor-board/main.js" "$HERE/mods/conductor-board/logic.js" "$HERE/mods/conductor-board/mod.json" "$HOME_DIR/mods/conductor-board/"
 cp "$HERE/layouts/conductor.svg" "$HOME_DIR/layouts/conductor.svg"
-python3 - "$HERE/layouts/conductor.json" "$HOME_DIR/layouts/conductor.json" "$MANAGER" "$DEMO" "$NOWAVE" "$NOPEEK" "$SESSION_FILE" <<'PY'
+python3 - "$HERE/layouts/conductor.json" "$HOME_DIR/layouts/conductor.json" "$MANAGER" "$DEMO" "$NOWAVE" "$NOLIVE" "$SESSION_FILE" <<'PY'
 import json, sys
-src, dst, manager, demo, nowave, nopeek, mfile = sys.argv[1:8]
+src, dst, manager, demo, nowave, nolive, mfile = sys.argv[1:8]
 layout = json.load(open(src))
 def walk(n):
     yield n
@@ -54,11 +57,11 @@ for n in walk(layout):
     if mfile and c.get("mod") == "conductor-board": c.setdefault("props", {})["session_file"] = mfile
     if demo and c.get("mod") == "conductor-board": c.setdefault("props", {})["demo"] = True
     if nowave and c.get("mod") == "conductor-board": c.setdefault("props", {})["wave"] = False
-    if nopeek and c.get("mod") == "conductor-board": c.setdefault("props", {})["peek"] = False
+    if nolive and c.get("mod") == "conductor-board": c.setdefault("props", {})["live"] = False
     if nowave and n["id"] == "host-head": n["size"] = {"px": 234}
 with open(dst, "x") as f: json.dump(layout, f, indent=2); f.write("\n")
 PY
-echo "Installed conductor (manager slot: ${MANAGER:-none}; wave: $([ -n "$NOWAVE" ] && echo off || echo on); peek: $([ -n "$NOPEEK" ] && echo off || echo on))."
+echo "Installed conductor (manager slot: ${MANAGER:-none}; wave: $([ -n "$NOWAVE" ] && echo off || echo on); live pane: $([ -n "$NOLIVE" ] && echo off || echo on))."
 cat <<'EOF'
 
 Nothing has been switched yet. (To reinstall later: switch to main first, then ./uninstall.sh, then ./install.sh.) Safe first run:
@@ -69,5 +72,5 @@ Nothing has been switched yet. (To reinstall later: switch to main first, then .
        ctrl-alt-shift-escape   (always works: back to the default "main" layout, nothing is deleted)
   5. Back:    ctrl-shift-l again, or herdr-app do layout.switch --name main
   6. Remove:  switch to main first, then ./uninstall.sh
-Not happy with the voice bars or the previews? Reinstall with --no-wave and/or --no-peek.
+Not happy with the voice bars or the live right pane? Reinstall with --no-wave and/or --no-live-pane.
 EOF

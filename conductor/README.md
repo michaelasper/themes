@@ -1,6 +1,6 @@
 # Conductor
 
-A Herdr app layout for running many agents from one "manager" session (for example a pi session with voice). Left: a header (Conductor state, optional voice waveform) over an optional manager terminal. Centre: flight-strip bays (Needs you, Working, Review ready, Idle). Right: a reader that follows the selected strip.
+A Herdr app layout for running many agents from one "manager" session (for example a pi session with voice). Left: a header (Conductor state, optional voice waveform) over an optional manager terminal. Centre: flight-strip bays (Needs you, Working, Review ready, Idle). Right: the selected session's real terminal (live pane), with a review banner on top when it is ready for review.
 
 ![Conductor](preview.png)
 
@@ -17,10 +17,10 @@ git clone https://github.com/michaelasper/themes.git
 cd themes/conductor
 ./install.sh                       # no conductor terminal pinned until /conductor on registers one; wave and previews on
 ./install.sh --manager t1          # fallback: pin terminal t1 in the left slot if no conductor session file names one
-./install.sh --no-wave --no-peek   # switch the waveform / the right-pane text previews off
+./install.sh --no-wave --no-live-pane   # waveform off / the right pane does not follow the selection (Enter, g or Open embeds)
 ```
 
-Flags can also be set by env (`CONDUCTOR_NO_WAVE=1`, `CONDUCTOR_NO_PEEK=1`) or later by editing `props` (`"wave": false`, `"peek": false`) on the `conductor-board` blocks of the installed layout. `--no-wave` also shortens the left header. `--demo` is dev-only (sample strips) and is never the default.
+Flags can also be set by env (`CONDUCTOR_NO_WAVE=1`, `CONDUCTOR_NO_LIVE_PANE=1`) or later by editing `props` (`"wave": false`, `"live": false`) on the `conductor-board` blocks of the installed layout. `--no-wave` also shortens the left header. `--demo` is dev-only (sample strips) and is never the default.
 
 `install.sh` copies only new files (`layouts/conductor.json`, `layouts/conductor.svg`, `mods/conductor-board/`) and refuses to overwrite. It never touches `keys.json` or other layouts. Then switch with `ctrl-shift-l` or `herdr-app do layout.switch --name conductor`; `ctrl-shift-l` goes on to the next layout, or `layout.switch --name main` returns. `./uninstall.sh` removes it.
 
@@ -34,21 +34,21 @@ To use another theme, edit `"theme"` on the root of `~/.config/herdr-app/layouts
 |---|---|
 | Strips: name, status message, time since status change, latest event, tag | `agents()`, `terminals()` (`report.msg`, `report.kind`, `status_ms`, `turn`) |
 | Blocked strip | dialog title (`report.msg`) and kind (`question`, `auth`, `permission`) when the agent reports one; offset right, pulsing bar |
-| Review ready (status `done`) reader | last status message; `git --no-optional-locks -C <cwd> status --short` and `diff --stat`, read-only, at most every 30 s |
-| Blocked reader | dialog title and the last lines of the terminal via `hc read` (throttled, see Safeguards) |
-| Working / idle | a read-only text snapshot (`hc read`, throttled) until you press Open, which puts the real terminal in the panel (see "Open in panel") |
+| Review banner (selected session is `done`) | top of the right pane, above the terminal: last status message; `git --no-optional-locks -C <cwd> status --short` and `diff --stat`, read-only, one read at a time, at most every 30 s, only for the selected review-ready session |
+| Right pane | the selected session's real terminal (live pane, see "Live pane"); the header shows its status line (blocked: the dialog title and kind it reported; age; turn; subagents working) |
+| Strip status | **effective status** (see "Subagents and effective status"); the Conductor's own session is not a strip (it is pinned in the left column) |
 | Left header | the Conductor's reported state (or the empty state and "+ Start conductor") and "recent changes in the last 30 min" computed from `status_ms` |
 
 Keys work after clicking the centre column: `1`-`8` select, `j`/`k` or arrows move, `g`/`enter` (or the **Open** button) put the session's terminal in the right panel, `esc` (or **Back**) returns, `n` starts a new session. Working strips have a quiet native opacity glow; blocked ones pulse; done and idle are still.
 
 ## Not implemented (deliberately not faked)
 
-- Verification badges, test counts, "verified" marks and spoken summaries. The review reader shows git output and the last status message only.
+- Verification badges, test counts, "verified" marks and spoken summaries. The review banner shows git output and the last status message only.
 - "Hold space to talk". The waveform only displays an optional voice-state file (below); it never records or sends audio.
 - An authority tag (ASK/AUTO): nothing reports it. The tag shows the status (and blocked kind).
 - Approve/Hold buttons: the board never answers dialogs or sends input; **Open** shows the real terminal in the panel; answering happens there.
 - Command palette on `cmd-k`: use Herdr's own (`app.palette`).
-- A live terminal that follows the selection. The right panel embeds a terminal only on an explicit Open (see "Open in panel").
+- Reading other sessions' terminal text. There is no text snapshot any more: the pane embeds the real terminal instead, so nothing calls `hc read`.
 
 
 ## Safeguards (why this layout will not squish or freeze your sessions)
@@ -57,27 +57,27 @@ An earlier build reportedly made sessions "get really squished" and the app free
 
 | Hypothesis (evidence) | Safeguard |
 |---|---|
-| A terminal block resizes the real PTY to its tile. The old right pane embedded `{"agent":"focused"}` and a 2 s timer called `agent.focus` on every selected working/idle agent, so one PTY after another was re-embedded at tile size; the left slot was `{"tab":"active"}`, which follows the focused agent's tab, so the same terminal could be embedded twice and fought over its size. | Only an explicit Open embeds a session, in one place (the right panel), one at a time; selection, timers and render never embed. The left slot is a fixed terminal id (never `{"tab":"active"}`/`agent:focused`) and the Conductor's own terminal can never be opened on the right, so one terminal is never embedded twice. See "Open in panel". |
+| A terminal block resizes the real PTY to its tile. The old right pane embedded `{"agent":"focused"}` and a 2 s timer called `agent.focus` on every selected working/idle agent, so one PTY after another was re-embedded at tile size; the left slot was `{"tab":"active"}`, which follows the focused agent's tab, so the same terminal could be embedded twice and fought over its size. | Originally only an explicit Open embeds a session, in one place (the right panel), one at a time; selection, timers and render never embed. The left slot is a fixed terminal id (never `{"tab":"active"}`/`agent:focused`) and the Conductor's own terminal can never be opened on the right, so one terminal is never embedded twice. See "Open in panel". |
 | `AGENTS.md`: "Every redraw of a mod redraws the whole window". The 50 ms voice loop redrew the window up to 20 times a second, with live terminals in it. | Voice file polled at most every 250 ms while someone talks, every 1 s otherwise, every 3 s when the layout is not shown; redraw only when the state or the level (8 steps) changes; bars ease natively (`transition`). No `watchFolder`. |
 | `AGENTS.md`: timers keep running while a mod is hidden. | Every poll checks `shared("layout") === "conductor"` first and does nothing otherwise. |
-| `hc read` / `git status` every 2-8 s with no timeout, no single-flight, and re-run on selection change. | All commands go through `SafeRunner` (`mods/conductor-board/logic.js`): never during render or in click handlers; one in flight; 5 s hard timeout (the app allows 30 s); at most 12 per minute; per-key minimum interval (blocked 6 s, working 4 s, idle 15 s, done 30 s); 15 s back-off after a failure; a selection must be stable for 400 ms first. |
+| `hc read` / `git status` every 2-8 s with no timeout, no single-flight, and re-run on selection change. | All commands go through `SafeRunner` (`mods/conductor-board/logic.js`): never during render or in click handlers; one in flight; 5 s hard timeout (the app allows 30 s); at most 12 per minute; per-key minimum interval (30 s for the banner git read); 15 s back-off after a failure; a selection must be stable for 400 ms first. |
 | `git status` takes the index lock and can race an agent's own git. | `git --no-optional-locks`. |
 | Fixed-width clamps: host 440 px + strips min 380 + right min 320 = a 1188 px minimum. Narrower windows squeeze the columns. | Host is a weight (4/5/5) with a 300 px min; mins sum to 900 px. |
 | Test layouts left in the app. | None shipped. |
 
 Still true and unavoidable: the Conductor terminal's PTY is resized to its slot while this layout is shown (and back when you switch away), and an opened session's PTY is resized to the right panel until Back.
 
-Switches: `--no-peek` (no reading of other sessions' text at all), `--no-wave` (no voice-file reads), no conductor session and no `--manager` (no left terminal).
+Switches: `--no-live-pane` (the pane embeds only on Enter/g/Open), `--no-wave` (no voice-file reads), no conductor session and no `--manager` (no left terminal).
 
 ## Tests
 
-`node test/harness.mjs` runs the real `main.js` against mocked `gpui-kit`/`herdr` modules: voice file parsing and staleness, poll intervals, redraw-only-on-change, selection debounce, throttling, single in flight, timeout, rate cap, back-off, zero agents, hidden layout, `wave=false`/`peek=false`, demo mode, `n` key, that nothing runs during render, Open taking over the panel and Back restoring, one embed at a time, the Conductor never being openable, the conductor session file (valid, stale, missing, terminal gone, changing at runtime, re-pin), the empty state and the Start button. It does not draw anything (a recording stand-in for the UI kit collects the texts and click handlers).
+`node test/harness.mjs` runs the real `main.js` against mocked `gpui-kit`/`herdr` modules: voice file parsing and staleness, poll intervals, redraw-only-on-change, selection debounce, throttling, single in flight, timeout, rate cap, back-off, zero agents, hidden layout, `wave=false`/`peek=false`, demo mode, `n` key, that nothing runs during render, Open taking over the panel and Back restoring, one embed at a time, the Conductor never being openable, the conductor session file (valid, stale, missing, terminal gone, changing at runtime, re-pin), the empty state and the Start button. It does not draw anything (a recording stand-in for the UI kit collects the texts and click handlers). Added: effective status (parent idle + child working, child done, nested, blocked precedence, no children), the Conductor hidden from strips/counts/numbering/selection and following a changed manager id, the live pane (debounced follow, one at a time, never the Conductor, Esc hold, `--no-live-pane`), and the review banner (review-ready only, cached, single in flight, no snapshot code path).
 
 ## Safe first run (visual verification is yours)
 
 Nothing here has been seen in the running app since the changes below; `herdr-app check` and the harness pass. Do this once:
 
-1. Save your work. Install: `./install.sh` (add `--no-wave --no-peek` for the quietest start).
+1. Save your work. Install: `./install.sh` (add `--no-wave --no-live-pane` for the quietest start).
 2. `herdr-app status` shows no errors.
 3. Switch: `ctrl-shift-l` (or `herdr-app do layout.switch --name conductor`).
 3a. Open one session (Enter or Open), then Back. Open another. Watch for squished terminals.
@@ -108,20 +108,32 @@ Default path `~/.pi/agent/pi-speak/state.json`; override with the host block's `
 
 pi-speak is one known writer (speaking level: RMS envelope of the clip being played; listening: mic RMS). The mod does not depend on it.
 
-## Open in panel
+## Live pane
 
-**Open** (button, `g` or `enter`) makes the session's terminal take over the right panel in place, with no popup. `esc` (board focused) or **Back** returns to the reader.
+By default the right pane shows the **selected session's real terminal**, so there is no Open click. Selecting a strip (click, `1`-`8`, `j`/`k`) releases the old embed at once; once the selection has been stable for 400 ms the new session is embedded. A review-ready (`done`) session shows a compact banner at the top of the same pane (last status message, `git status --short`, `git diff --stat`, all real and read-only) above its terminal.
 
-How it is mounted (from Herdr's `AGENTS.md`): the right column body is a `stack` (`right-body`) with two children, `detail` (this mod) and `session`, a `{"agent":"focused"}` block ("one agent's terminal, full size"). Open runs `agent.focus {terminal}` and then `layout.select {stack: "right-body", child: "session"}`; Back runs `layout.select ... "detail"`. A terminal block resizes the real PTY to its tile, so the tradeoff is: the opened session is re-wrapped to the panel's size while open (and the Conductor's terminal to the left slot) and returns to its own size when released. Any program in it that redraws on resize will redraw.
+**Tradeoff (PTY resize):** a terminal block resizes the real PTY to its tile, so the selected session's terminal is resized to the pane while it is selected (it re-wraps and any program that redraws on resize redraws) and returns to its own size when released. The Conductor's terminal is likewise sized to the left slot while this layout is shown. If that bothers you, install with `./install.sh --no-live-pane` (or set `"live": false` on the layout's `conductor-board` blocks): the pane then embeds only on an explicit **Open** (button, `g` or `enter`), and **Back** (or `esc`) releases it. In live mode `esc` releases the session and holds it out until you select another strip.
 
-Squish/freeze rules that follow from that, all enforced in code and tests:
+How it is mounted (from Herdr's `AGENTS.md`): the right column has the `head` block (title, status line, banner) and a `stack` (`right-body`) with two children, `detail` (this mod, a one-line placeholder) and `session`, a `{"agent":"focused"}` block ("one agent's terminal, full size"). Embedding runs `agent.focus {terminal}` then `layout.select {stack: "right-body", child: "session"}`; releasing runs `layout.select ... "detail"`. The controller (one 500 ms check) lives in the `head` block because it is always mounted.
 
-- Embed only on an explicit Open, never on selection, a timer or render. Open is debounced (600 ms) and ignores a repeat of the open terminal.
-- At most one opened session at a time; opening another replaces it. The Conductor's terminal is the only other embedded one and is never openable (the strip says "this is the Conductor"; the Open button is absent), so no terminal is embedded twice.
-- No timer is tied to the embed. Release (`layout.select ... detail`) happens on Back, on selecting another strip, when the session ends or becomes the Conductor, and when the layout is no longer shown. On each activation the stack is also reset to the reader once.
-- Clicking into the embedded terminal gives it keyboard focus, so `esc` then goes to that terminal: use the Back button.
+Squish/freeze rules, all enforced in code and tests (the older "embed only on explicit Open" rule is deliberately replaced by the debounced follow, at the user's request):
 
-Unverified: that `agent.focus` only moves Herdr's "focused agent" and does not change which tab is shown, and that a hidden stack child is not mounted (the docs say a stack shows one child).
+- Follow only after >= 400 ms of stable selection, and Open's own 600 ms debounce, and at most 12 embeds a minute. Render and click handlers never embed (a click only changes the selection).
+- Exactly one session embedded at a time besides the Conductor slot; opening another replaces it. Never the Conductor's terminal (it is not a strip, `open()` refuses it, and an embed of it is released), never the same terminal twice.
+- No timer or loop is tied to the embed. Release happens on selection change, Back/esc, when the session ends or becomes the Conductor, and when the layout is no longer shown. On each activation the stack is reset to the placeholder once.
+- Banner git info: only for the selected review-ready session, one command batch in flight (`SafeRunner`: 5 s timeout, 12/min, 30 s per key, back-off), never during render, `git --no-optional-locks`.
+- Clicking into the embedded terminal gives it keyboard focus, so board keys then go to that terminal; click the board first.
+- Nothing reads other sessions' terminal text (no `hc read`, no snapshot).
+
+Unverified (not seen in the app): that `agent.focus` only moves Herdr's "focused agent" and does not change which tab is shown, that a hidden stack child is not mounted, and how the banner looks at the 112 px header height.
+
+## Subagents and effective status
+
+A strip's status is its **effective status**: `blocked` if the agent itself is blocked (blocked always wins); `working` if its own status is `working` OR any live descendant terminal reports `working`; otherwise its own (`idle`/`done`). A parent that is idle or done with a working child therefore sits in WORKING and shows `N subagents working`; a finished or idle child changes nothing; descendants count through nesting (a child's child counts toward the root).
+
+Signal used (generic, optional contract, no pi code imported): the core records the starter of a terminal as `parent` (Herdr's `AGENTS.md`: sub-agents are terminals an agent started with `hc run`, `terminals()[i].parent`). A live descendant terminal whose own reported status is `working` counts toward every ancestor (depth cap 8, cycle safe). Any tool that wants its helpers counted can start them as child terminals that report `working` over OSC 7501.
+
+Limit: helpers that are not terminals are invisible to a generic mod. pi-subagents' async runs live in `$TMPDIR/pi-subagents-uid-*/async-subagent-runs/<id>/status.json` (`state: "running"`, pid, `sessionId`), but those are in-process runs with no terminal and no link to the parent terminal address, so the mod does not read them. For those to count, a pi-side change is needed (see the report): the pi extension that owns the run should publish a working state for the parent session (for example keep the session's OSC 7501 status `working` while any subagent, monitor or loop is active, or run each subagent as a child terminal that reports `working`).
 
 ## Conductor session file (optional, generic)
 

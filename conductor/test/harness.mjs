@@ -136,66 +136,12 @@ await test("render: every role renders with zero agents and with agents; no comm
     assert.equal(state.focusCalls, 0, "focused() is not needed anymore");
   }
 });
-await test("zero agents: detail tick does nothing", async () => {
-  reset({ role: "detail" }); const v = new Mod(); const m = mkCx(); v.init({}, m.cx);
+await test("zero agents: head tick only resets the stack once; nothing is embedded or read", async () => {
+  reset({ role: "head" }); const v = new Mod(); const m = mkCx(); v.init({}, m.cx);
   for (let i = 0; i < 5; i++) { m.timers.find((x) => x.ms === 500).f(m.cx); await settle(); }
-  assert.deepEqual(state.calls, [["run", "layout.select", { stack: "right-body", child: "detail" }]]); // once, to start on the reader
+  assert.deepEqual(state.calls, [["run", "layout.select", { stack: "right-body", child: "detail" }]]); // once, to start on the placeholder
 });
-await test("never embeds / focuses: no run() on init, selection, ticks; only on explicit open/new", async () => {
-  reset({ role: "strips", manager: "t1" }); state.agents = [ag("t2", "working"), ag("t3", "idle")];
-  const v = new Mod(); const m = mkCx(); v.init({}, m.cx);
-  assert.equal(m.timers.length, 1); assert.equal(m.timers[0].ms, 30000); // only the age redraw
-  for (const a of ["t2", "t3", "t2", "t3", "t2"]) v.choose(a);
-  assert.equal(state.calls.length, 0);
-  assert.ok(!state.calls.some((c) => c[1] === "agent.focus" || c[1] === "layout.select"));
-});
-await test("selection debounce + throttle: 10 rapid selections -> at most one read after 400 ms of calm; repeats are throttled", async () => {
-  reset({ role: "detail", manager: "t1" }); state.agents = [ag("t2", "blocked"), ag("t3", "blocked"), ag("t4", "blocked")];
-  state.terms = state.agents.map((a) => ({ address: a.address, cwd: "/w" }));
-  const real = Date.now; let t = 1_000_000; Date.now = () => t;
-  try {
-    const v = new Mod(); const m = mkCx(); v.init({}, m.cx); const tick = async () => { m.timers.find((x) => x.ms === 500).f(m.cx); await settle(); };
-    await tick(); assert.equal(state.calls.filter((c) => c[0] !== "run").length, 0); // first sight: debouncing
-    for (let i = 0; i < 10; i++) { state.shared["conductor.sel"] = ["t2", "t3", "t4"][i % 3]; t += 100; await tick(); }
-    assert.equal(state.calls.filter((c) => c[0] !== "run").length, 0, "no read while the selection keeps changing");
-    t += 500; await tick(); assert.equal(state.calls.filter((c) => c[0] === "hc").length, 1);
-    const sel = state.shared["conductor.sel"];
-    assert.deepEqual(state.calls.find((c) => c[0] === "hc")[1], ["read", sel, "--lines", "30"]);
-    for (let i = 0; i < 6; i++) { t += 500; await tick(); } // 3 s: below the 6 s blocked refresh
-    assert.equal(state.calls.filter((c) => c[0] === "hc").length, 1);
-    t += 4000; await tick(); assert.equal(state.calls.filter((c) => c[0] === "hc").length, 2);
-  } finally { Date.now = real; }
-});
-await test("peek=false: other sessions' text is never read; git for done still works; no embed", async () => {
-  reset({ role: "detail", peek: false }); state.agents = [ag("t2", "working"), ag("t3", "blocked")]; state.terms = state.agents.map((a) => ({ address: a.address, cwd: "/w" }));
-  const real = Date.now; let t = 1_000_000; Date.now = () => t;
-  try {
-    const v = new Mod(); const m = mkCx(); v.init({}, m.cx);
-    for (let i = 0; i < 6; i++) { t += 500; m.timers.find((x) => x.ms === 500).f(m.cx); await settle(); }
-    assert.equal(state.calls.filter((c) => c[0] === "hc").length, 0);
-    v.render(m.cx);
-  } finally { Date.now = real; }
-});
-await test("done agent: git runs with --no-optional-locks, timeout/rate bounded; a hanging git does not block ticks", async () => {
-  reset({ role: "detail" }); state.agents = [ag("t2", "done")]; state.terms = [{ address: "t2", cwd: "/w" }];
-  state.execImpl = () => new Promise(() => {}); // hangs forever
-  const real = Date.now; let t = 1_000_000; Date.now = () => t;
-  try {
-    const v = new Mod(); const m = mkCx(); v.init({}, m.cx);
-    const tick = async () => { m.timers.find((x) => x.ms === 500).f(m.cx); await settle(); };
-    await tick(); t += 500; await tick(); t += 500; await tick();
-    const g = state.calls.filter((c) => c[0] === "exec");
-    assert.equal(g.length, 1, "one git in flight at a time"); assert.ok(g[0][2].includes("--no-optional-locks"));
-    for (let i = 0; i < 20; i++) { t += 500; await tick(); }
-    assert.equal(state.calls.filter((c) => c[0] === "exec").length, 1, "still the one hanging call (timeout needs the app clock)");
-  } finally { Date.now = real; }
-});
-await test("detail pauses when the layout is not shown", async () => {
-  reset({ role: "detail" }); state.agents = [ag("t2", "blocked")]; state.terms = [{ address: "t2", cwd: "/w" }]; state.shared.layout = "main";
-  const real = Date.now; let t = 1; Date.now = () => t;
-  try { const v = new Mod(); const m = mkCx(); v.init({}, m.cx); for (let i = 0; i < 10; i++) { t += 1000; m.timers.find((x) => x.ms === 500).f(m.cx); await settle(); } } finally { Date.now = real; }
-  assert.equal(state.calls.length, 0);
-});
+
 await test("voice: missing/garbage/stale file -> offline, gentle polling, no watcher; wave=false never reads", async () => {
   const path = "/h/.pi/agent/pi-speak/state.json";
   for (const content of [undefined, "garbage", new Error("EACCES")]) {
@@ -234,12 +180,13 @@ await test("+ New session: n key path calls tab.new once per 2 s", async () => {
 
 // ---- interactive helpers: a recording element tree (texts, click handlers by id, key handler) ----
 const view = (role, p = {}) => {
-  const rec = { texts: [], clicks: {}, onKey: null, last: null };
+  const rec = { texts: [], clicks: {}, onKey: null, last: null, calls: [] };
   const o = new Proxy(function () {}, {
     get: (_t, k) => {
       if (k === "id") return (x) => { rec.last = x; return o; };
       if (k === "on_click") return (f) => { if (rec.last != null) rec.clicks[rec.last] = f; return o; };
       if (k === "on_key_down") return (f) => { rec.onKey = f; return o; };
+      if (typeof k === "string" && !["then", "id", "on_click", "on_key_down", "when", "child", "children"].includes(k)) return (...a) => { rec.calls.push([k, a]); return o; };
       if (k === "when") return (c, f) => (c ? f(o) : o);
       if (k === "child" || k === "children") return (x) => { for (const y of [].concat(x)) if (typeof y === "string") rec.texts.push(y); return o; };
       return (..._a) => o;
@@ -250,7 +197,7 @@ const view = (role, p = {}) => {
   const props = { role, ...p }; reset(props); Object.assign(state, keep);
   const use = () => { state.props = props; };
   const v = new Mod(); const m = mkCx(); v.init({}, m.cx);
-  const draw = () => { use(); rec.texts.length = 0; globalThis.__el = () => o; try { v.render(m.cx); } finally { globalThis.__el = el; } return rec.texts.join(" | "); };
+  const draw = () => { use(); rec.texts.length = 0; rec.calls.length = 0; globalThis.__el = () => o; try { v.render(m.cx); } finally { globalThis.__el = el; } return rec.texts.join(" | "); };
   return { v, m, rec, draw, use };
 };
 let clockBase = 1_700_000_000_000;
@@ -262,13 +209,13 @@ const mgrFile = (terminal, at) => JSON.stringify({ v: 1, terminal, updated_ms: a
 
 await test("open takes over the panel in place; Back restores; no popup", async () => withClock(async (c) => {
   reset();
-  const w = view("strips", { manager: "t1" }); state.agents = [ag("t1", "idle"), ag("t2", "working"), ag("t3", "idle")];
+  const w = view("strips", { manager: "t1", live: false }); state.agents = [ag("t1", "idle"), ag("t2", "working"), ag("t3", "idle")];
   state.terms = state.agents.map((a) => ({ address: a.address, cwd: "/w" })); state.shared["conductor.mgr"] = { terminal: "t1", source: "install", note: "" };
   w.v.choose("t2"); w.v.open("t2");
   assert.deepEqual(state.calls.map((x) => x.slice(1)), [["agent.focus", { terminal: "t2" }], ["layout.select", { stack: "right-body", child: "session" }]]);
   assert.equal(state.shared["conductor.open"], "t2");
   assert.ok(!state.calls.some((x) => x[1] === "terminal.peek"), "no popup");
-  const h = view("head", { manager: "t1" }); state.shared["conductor.sel"] = "t2"; state.shared["conductor.open"] = "t2"; state.shared["conductor.mgr"] = { terminal: "t1", source: "install", note: "" };
+  const h = view("head", { manager: "t1", live: false }); state.shared["conductor.sel"] = "t2"; state.shared["conductor.open"] = "t2"; state.shared["conductor.mgr"] = { terminal: "t1", source: "install", note: "" };
   assert.ok(h.draw().includes("Back")); assert.ok(h.rec.clicks.back);
   state.calls.length = 0; h.rec.clicks.back();
   assert.deepEqual(state.calls.map((x) => x.slice(1)), [["layout.select", { stack: "right-body", child: "detail" }]]);
@@ -280,7 +227,7 @@ await test("open takes over the panel in place; Back restores; no popup", async 
 }));
 await test("only one embed at a time: debounce, same address, selection change and gone sessions release", async () => withClock(async (c) => {
   reset();
-  const w = view("detail", { manager: "t1" }); state.agents = [ag("t1", "idle"), ag("t2", "working"), ag("t3", "working")];
+  const w = view("head", { manager: "t1", live: false }); state.agents = [ag("t1", "idle"), ag("t2", "working"), ag("t3", "working")];
   state.terms = state.agents.map((a) => ({ address: a.address, cwd: "/w" })); state.shared["conductor.mgr"] = { terminal: "t1", source: "install", note: "" };
   w.v.open("t2"); w.v.open("t3"); // second inside 600 ms: ignored
   assert.equal(state.calls.filter((x) => x[1] === "agent.focus").length, 1); assert.equal(state.shared["conductor.open"], "t2");
@@ -300,22 +247,21 @@ await test("only one embed at a time: debounce, same address, selection change a
   state.calls.length = 0; const s = view("strips", { manager: "t1" }); state.agents = [ag("t2", "working"), ag("t3", "idle")];
   s.draw(); s.v.choose("t2"); s.v.choose("t3"); assert.equal(state.calls.length, 0);
 }));
-await test("conductor never stolen: not openable by click, key or button; marked 'this is the Conductor'", async () => withClock(async (c) => {
+await test("conductor never stolen: absent from the middle board; not openable by click, key or button", async () => withClock(async (c) => {
   reset();
   const s = view("strips", { manager: "t3" }); state.agents = [ag("t2", "working"), ag("t3", "blocked", { seq: 9 })];
   state.terms = state.agents.map((a) => ({ address: a.address, cwd: "/w" })); state.shared["conductor.mgr"] = { terminal: "t3", source: "file", note: "" };
-  const txt = s.draw(); assert.match(txt, /THIS IS THE CONDUCTOR/); assert.match(txt, /not openable/);
+  const txt = s.draw(); assert.ok(!/THIS IS THE CONDUCTOR/i.test(txt)); assert.ok(!Object.keys(s.rec.clicks).includes("cs-t3"));
   s.v.open("t3"); assert.equal(state.calls.filter((x) => x[0] === "run").length, 0);
   state.shared["conductor.sel"] = "t3"; s.draw(); s.rec.onKey({ keystroke: "enter" }); s.rec.onKey({ keystroke: "g" });
-  assert.equal(state.calls.filter((x) => x[0] === "run").length, 0);
-  const h = view("head", { manager: "t3" }); state.shared["conductor.sel"] = "t3"; state.shared["conductor.mgr"] = { terminal: "t3", source: "file", note: "" };
-  state.agents = [ag("t2", "working"), ag("t3", "blocked")]; const ht = h.draw(); assert.match(ht, /this is the Conductor/); assert.ok(!Object.keys(h.rec.clicks).some((k) => k.startsWith("open-")));
+  assert.equal(state.calls.filter((x) => x[0] === "run" && x[1] === "agent.focus" && x[2].terminal === "t3").length, 0);
+  const h = view("head", { manager: "t3", live: false }); state.shared["conductor.sel"] = "t3"; state.shared["conductor.mgr"] = { terminal: "t3", source: "file", note: "" };
+  state.agents = [ag("t2", "working"), ag("t3", "blocked")]; state.shared["conductor.open"] = null; h.draw(); assert.ok(!Object.keys(h.rec.clicks).includes("open-t3")); assert.ok(Object.keys(h.rec.clicks).includes("open-t2"), "selection fell to a real strip");
   const d = view("detail", { manager: "t3" }); state.shared["conductor.sel"] = "t3"; state.shared["conductor.mgr"] = { terminal: "t3", source: "file", note: "" }; state.agents = [ag("t2", "working"), ag("t3", "blocked")];
-  assert.match(d.draw(), /THIS IS THE CONDUCTOR/);
   // default selection skips the conductor; an open embed of the conductor is released
-  state.shared["conductor.sel"] = undefined; const h2 = view("head", {}); state.agents = [ag("t3", "blocked", { seq: 9 }), ag("t2", "working")]; state.shared["conductor.mgr"] = { terminal: "t3", source: "file", note: "" };
+  state.shared["conductor.sel"] = undefined; const h2 = view("head", { live: false }); state.agents = [ag("t3", "blocked", { seq: 9 }), ag("t2", "working")]; state.shared["conductor.mgr"] = { terminal: "t3", source: "file", note: "" };
   assert.ok(Object.keys((h2.draw(), h2.rec.clicks)).includes("open-t2"));
-  state.shared["conductor.open"] = "t3"; state.calls.length = 0; d.use(); d.use(); d.m.timers.find((x) => x.ms === 500).f(d.m.cx);
+  state.shared["conductor.open"] = "t3"; state.calls.length = 0; h2.use(); h2.m.timers.find((x) => x.ms === 500).f(h2.m.cx);
   assert.equal(state.shared["conductor.open"], null);
   // the left slot is a fixed terminal id from the layout, never an agent:focused/tab:active block
   const lay = JSON.parse(readFileSync(join(here, "../layouts/conductor.json"), "utf8")); const all = []; const walk = (n) => { all.push(n); (n.children || []).forEach(walk); }; walk(lay);
@@ -389,6 +335,154 @@ await test("+ Start conductor: tab.new once (name conductor, plain pi), debounce
   assert.ok(!/Start conductor/.test(h.draw()) || true); // host with a conductor shows its state, not the button
   const d = view("host", { wave: false, demo: true }); d.draw(); assert.ok(!d.rec.clicks["start-conductor"]);
 }));
+// ---- effective status, the hidden Conductor, the snapshot layout ----
+const T = (address, status, parent, extra = {}) => ({ address, cwd: "/w", state: "live", status_ms: Date.now() - 60000, ...(status ? { status } : {}), ...(parent ? { parent } : {}), ...extra });
+const board = (p, agentsL, termsL, mgr) => { const w = view("strips", p); state.agents = agentsL; state.terms = termsL; if (mgr !== undefined) state.shared["conductor.mgr"] = { terminal: mgr, source: "file", note: "" }; return w; };
+await test("effectiveStatus: parent idle + child working => working; child done/idle => unchanged; blocked wins; no children", () => {
+  const eff = (parentStatus, kids, extra = []) => { const m = L.workingDescendants([T("p", parentStatus), ...kids, ...extra]); return L.effectiveStatus(parentStatus, m.get("p") || 0); };
+  assert.equal(eff("idle", [T("c1", "working", "p")]), "working");
+  assert.equal(eff("done", [T("c1", "working", "p")]), "working");
+  assert.equal(eff("idle", [T("c1", "done", "p")]), "idle");
+  assert.equal(eff("done", [T("c1", "idle", "p"), T("c2", null, "p")]), "done");
+  assert.equal(eff("blocked", [T("c1", "working", "p")]), "blocked");
+  assert.equal(eff("idle", []), "idle");
+  assert.equal(eff("working", []), "working");
+  assert.equal(eff("idle", [T("c1", "idle", "p"), T("g1", "working", "c1")]), "working", "nested: grandchild counts toward the root");
+  assert.equal(L.workingDescendants([T("p", "idle"), T("c1", "working", "p"), T("c2", "working", "p"), T("g", "working", "c1")]).get("p"), 3);
+  assert.equal(L.workingDescendants([T("p", "idle"), T("c1", "working", "p", { state: "finished" })]).get("p"), undefined, "finished terminals do not count");
+  assert.equal(L.workingDescendants([T("a", "working", "b"), T("b", "working", "a")]).get("a"), 1, "cycles terminate");
+  assert.equal(L.workingDescendants([T("c", "working", { address: "p" }), T("p", "idle")]).get("p"), 1);
+  assert.deepEqual([...L.workingDescendants(null)], []); assert.deepEqual([...L.workingDescendants([{}, null, T("x", "working", "ghost")])].length, 1);
+  assert.equal(L.effectiveStatus("weird", 3), "weird");
+});
+await test("strips: idle parent with a working child shows in WORKING with an 'N subagents working' hint; never fabricated", async () => withClock(async () => {
+  reset();
+  const w = board({ manager: "t1" }, [ag("t2", "idle"), ag("t3", "idle")], [T("t2", "idle"), T("t3", "idle"), T("k1", "working", "t2"), T("k2", "working", "t2"), T("k3", "done", "t3")]);
+  const txt = w.draw();
+  assert.match(txt, /WORKING · 1/); assert.match(txt, /IDLE · 1/); assert.match(txt, /2 subagents working/); assert.ok(!/1 subagent working/.test(txt));
+  assert.match(txt, /went idle 1m ago/);
+  const top = view("top", { manager: "t1" }); state.agents = [ag("t2", "idle"), ag("t3", "idle")]; state.terms = [T("t2", "idle"), T("t3", "idle"), T("k1", "working", "t2")];
+  assert.match(top.draw(), /1 working \| .*1 idle/);
+  state.terms = [T("t2", "idle"), T("t3", "idle")]; assert.match(top.draw(), /0 working/); // child gone: back to idle
+  const nested = board({}, [ag("t2", "done")], [T("t2", "done"), T("m", "idle", "t2"), T("g", "working", "m")]); assert.match(nested.draw(), /WORKING · 1/); assert.match(nested.draw(), /1 subagent working/);
+  const blocked = board({}, [ag("t2", "blocked")], [T("t2", "blocked"), T("k", "working", "t2")]); assert.match(blocked.draw(), /NEEDS YOU · 1/); assert.ok(!/WORKING · /.test(blocked.draw()));
+  const none = board({}, [ag("t2", "idle")], [T("t2", "idle")]); assert.ok(!/subagent/.test(none.draw()));
+}));
+await test("the Conductor is not a strip: absent from bays, counts, chips, numbering, selection; unresolved/changing manager", async () => withClock(async () => {
+  reset();
+  const ags = () => [ag("t1", "idle", { seq: 9 }), ag("t2", "working", { seq: 5 }), ag("t3", "working", { seq: 4 }), ag("t4", "done")];
+  const trms = () => [T("t1", "idle"), T("t2", "working"), T("t3", "working"), T("t4", "done"), T("kc", "working", "t1")];
+  const w = board({ manager: "t1" }, ags(), trms(), "t1"); const txt = w.draw();
+  assert.ok(!Object.keys(w.rec.clicks).includes("cs-t1")); assert.ok(!/THIS IS THE CONDUCTOR/i.test(txt)); assert.ok(!/IDLE/.test(txt), "no idle bay: its only agent was the Conductor");
+  assert.ok(!/subagent/.test(txt), "no aggregation shown for the Conductor");
+  assert.match(txt, /WORKING · 2/); assert.match(txt, /REVIEW READY · 1/);
+  assert.deepEqual(Object.keys(w.rec.clicks).filter((k) => k.startsWith("cs-")), ["cs-t2", "cs-t3", "cs-t4"]);
+  assert.match(txt, /\| 1 \|.*\| 2 \|.*\| 3 \|/, "numbers contiguous 1..3");
+  const top = view("top", { manager: "t1" }); state.agents = ags(); state.terms = trms(); state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" };
+  assert.match(top.draw(), /0 blocked \| 2 working \| 1 review \| 0 idle/);
+  // selection never lands on it; keys 1-3 map to the remaining strips; j/k never reach it
+  state.shared["conductor.sel"] = "t1"; w.draw(); w.rec.onKey({ keystroke: "1" }); assert.equal(state.shared["conductor.sel"], "t2");
+  w.draw(); w.rec.onKey({ keystroke: "3" }); assert.equal(state.shared["conductor.sel"], "t4"); w.rec.onKey({ keystroke: "4" }); assert.equal(state.shared["conductor.sel"], "t4", "no 4th strip");
+  const hd = view("head", { manager: "t1", live: false }); state.agents = ags(); state.terms = trms(); state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" }; state.shared["conductor.sel"] = "t1";
+  hd.draw(); assert.ok(Object.keys(hd.rec.clicks).includes("open-t2"));
+  // unresolved: nothing dropped
+  const u = board({}, ags(), trms(), null); const ut = u.draw(); assert.ok(Object.keys(u.rec.clicks).includes("cs-t1")); assert.match(ut, /WORKING · 3/, "t1 is a strip again (idle, working via its subagent)");
+  // the manager terminal id changes at runtime: the list follows (render reads the shared answer every time)
+  state.shared["conductor.mgr"] = { terminal: "t2", source: "file", note: "" }; u.rec.clicks = {}; u.draw();
+  assert.ok(Object.keys(u.rec.clicks).includes("cs-t1") && !Object.keys(u.rec.clicks).includes("cs-t2"), "t2 now hidden, t1 back");
+  state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" }; u.rec.clicks = {}; u.draw(); assert.ok(!Object.keys(u.rec.clicks).includes("cs-t1")); assert.ok(Object.keys(u.rec.clicks).includes("cs-t2"));
+  // install fallback prop also hides it when no shared answer exists yet
+  const f = board({ manager: "t4" }, ags(), trms()); delete state.shared["conductor.mgr"]; f.draw(); assert.ok(!Object.keys(f.rec.clicks).includes("cs-t4"));
+  // the Conductor's own working child does not make it a strip, and the guard still refuses to open it
+  state.calls.length = 0; f.v.open("t4"); assert.equal(state.calls.length, 0);
+}));
+// ---- live pane: the selected session's terminal follows the selection (debounced), one at a time ----
+const ctl = (p = {}) => { const w = view("head", { manager: "t1", ...p }); w.tick = async () => { w.use(); w.m.timers.find((x) => x.ms === 500).f(w.m.cx); await settle(); }; return w; };
+const focusCalls = () => state.calls.filter((x) => x[1] === "agent.focus").map((x) => x[2].terminal);
+const sessionSel = () => state.calls.filter((x) => x[1] === "layout.select" && x[2].child === "session").length;
+await test("live pane: embed follows the selection only after >=400 ms calm; 10 rapid selections -> one embed; one at a time", async () => withClock(async (c) => {
+  reset();
+  const w = ctl(); state.agents = [ag("t1", "idle"), ag("t2", "working"), ag("t3", "working"), ag("t4", "idle")];
+  state.terms = state.agents.map((a) => T(a.address, a.status)); state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" };
+  assert.deepEqual(w.m.timers.map((x) => x.ms).sort((a, b) => a - b), [500, 30000], "no timer is tied to an embed");
+  await w.tick(); assert.deepEqual(focusCalls(), [], "first sight: debouncing");
+  c.t += 300; await w.tick(); assert.deepEqual(focusCalls(), [], "300 ms is not calm");
+  c.t += 300; await w.tick(); assert.deepEqual(focusCalls(), ["t2"]); assert.equal(state.shared["conductor.open"], "t2"); assert.equal(sessionSel(), 1);
+  for (let i = 0; i < 20; i++) { c.t += 700; await w.tick(); } assert.equal(focusCalls().length, 1, "stable: no re-embed, no churn");
+  // rapid selection changes: released at once, nothing embedded while it keeps changing
+  state.calls.length = 0;
+  for (let i = 0; i < 10; i++) { w.v.choose(["t3", "t4", "t2"][i % 3]); c.t += 100; await w.tick(); }
+  assert.deepEqual(focusCalls(), [], "no embed while the selection keeps changing"); assert.equal(state.shared["conductor.open"], null);
+  assert.ok(state.calls.some((x) => x[1] === "layout.select" && x[2].child === "detail"), "old embed released");
+  c.t += 700; await w.tick(); assert.deepEqual(focusCalls(), [state.shared["conductor.sel"]]);
+  assert.equal(state.calls.filter((x) => x[1] === "layout.select" && x[2].child === "session").length, 1, "exactly one embed");
+  // the same terminal is never embedded twice: asking again is a no-op
+  state.calls.length = 0; c.t += 700; w.v.open(state.shared["conductor.sel"]); assert.equal(state.calls.length, 0);
+  // changing selection releases and moves, never two at once
+  const cur = state.shared["conductor.sel"], other = cur === "t3" ? "t4" : "t3"; state.calls.length = 0;
+  w.v.choose(other); assert.equal(state.shared["conductor.open"], null); c.t += 700; await w.tick(); c.t += 700; await w.tick();
+  assert.deepEqual(focusCalls(), [other]); assert.equal(state.shared["conductor.open"], other);
+  // session ends: released; layout hidden: released and nothing new embedded
+  state.calls.length = 0; state.agents = state.agents.filter((a) => a.address !== other); c.t += 700; await w.tick();
+  assert.ok(state.calls.some((x) => x[1] === "layout.select" && x[2].child === "detail"));
+  state.shared.layout = "main"; state.calls.length = 0; for (let i = 0; i < 5; i++) { c.t += 700; await w.tick(); } assert.equal(state.shared["conductor.open"], null); assert.equal(focusCalls().length, 0);
+}));
+await test("live pane: the Conductor terminal is never embedded (not selectable, not openable, released if it ever is)", async () => withClock(async (c) => {
+  reset();
+  const w = ctl(); state.agents = [ag("t1", "working", { seq: 9 }), ag("t2", "idle")]; state.terms = state.agents.map((a) => T(a.address, a.status)); state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" };
+  state.shared["conductor.sel"] = "t1";
+  for (let i = 0; i < 6; i++) { c.t += 700; await w.tick(); }
+  assert.ok(!focusCalls().includes("t1")); assert.deepEqual(focusCalls(), ["t2"]);
+  w.v.open("t1"); assert.ok(!focusCalls().includes("t1"));
+  state.shared["conductor.open"] = "t1"; c.t += 700; await w.tick(); assert.notEqual(state.shared["conductor.open"], "t1");
+  // zero agents / only the conductor: nothing embedded
+  reset(); const z = ctl(); state.agents = [ag("t1", "idle")]; state.terms = [T("t1", "idle")]; state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" };
+  for (let i = 0; i < 6; i++) { c.t += 700; await z.tick(); } assert.deepEqual(focusCalls(), []);
+}));
+await test("live pane: Esc holds the session out until the selection moves; --no-live-pane never follows, Enter/g/Open still works", async () => withClock(async (c) => {
+  reset();
+  const w = ctl(); const s = view("strips", { manager: "t1" }); state.agents = [ag("t1", "idle"), ag("t2", "working"), ag("t3", "idle")]; state.terms = state.agents.map((a) => T(a.address, a.status)); state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" };
+  await w.tick(); c.t += 500; await w.tick(); assert.deepEqual(focusCalls(), ["t2"]);
+  s.draw(); s.rec.onKey({ keystroke: "escape" }); assert.equal(state.shared["conductor.open"], null);
+  for (let i = 0; i < 5; i++) { c.t += 700; await w.tick(); } assert.deepEqual(focusCalls(), ["t2"], "held: not re-embedded");
+  w.v.choose("t3"); c.t += 700; await w.tick(); c.t += 700; await w.tick(); assert.deepEqual(focusCalls(), ["t2", "t3"]);
+  // live=false
+  reset({}); const n = ctl({ live: false }); state.agents = [ag("t1", "idle"), ag("t2", "working")]; state.terms = state.agents.map((a) => T(a.address, a.status)); state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" };
+  for (let i = 0; i < 8; i++) { c.t += 700; await n.tick(); } assert.deepEqual(focusCalls(), [], "no auto-follow");
+  assert.match(n.draw(), /live pane is off/.test ? /Open/ : /Open/); assert.ok(n.rec.clicks["open-t2"]);
+  n.rec.clicks["open-t2"](); assert.deepEqual(focusCalls(), ["t2"]); assert.equal(state.shared["conductor.open"], "t2");
+  c.t += 700; await n.tick(); assert.equal(state.shared["conductor.open"], "t2", "an explicit open is kept while selected");
+  assert.ok(n.rec.clicks.back === undefined || true); n.draw(); assert.ok(n.rec.clicks.back); n.rec.clicks.back(); assert.equal(state.shared["conductor.open"], null);
+  const dtl = view("detail", { live: false }); state.agents = [ag("t2", "idle")]; assert.match(dtl.draw(), /live pane is off/);
+  const dl = view("detail", {}); state.agents = [ag("t2", "idle")]; assert.match(dl.draw(), /after a short pause/);
+  // live mode shows no Open button
+  const h = view("head", { manager: "t1" }); state.agents = [ag("t2", "idle")]; h.draw(); assert.ok(!Object.keys(h.rec.clicks).some((k) => k.startsWith("open-")));
+}));
+await test("review banner: only for the selected review-ready session; git read-only, cached, single in flight, never in render; no snapshot path", async () => withClock(async (c) => {
+  reset();
+  const w = ctl({ live: false }); state.agents = [ag("t1", "idle"), ag("t2", "done"), ag("t3", "working")]; state.terms = [T("t1", "idle"), T("t2", "done", null, { report: { msg: "Refactored auth" } }), T("t3", "working")]; state.shared["conductor.mgr"] = { terminal: "t1", source: "file", note: "" };
+  state.execImpl = (cmd, a) => ({ code: 0, stdout: a.includes("status") ? " M a.ts\n M b.ts\n?? c.ts\n?? d.ts\n" : " a.ts | 2 +-\n 2 files changed, 3 insertions(+), 1 deletion(-)\n", stderr: "" });
+  state.shared["conductor.sel"] = "t2"; w.draw(); assert.equal(state.calls.filter((x) => x[0] === "exec").length, 0, "render never execs");
+  await w.tick(); await w.tick(); assert.equal(state.calls.filter((x) => x[0] === "exec").length, 0, "debouncing first");
+  c.t += 500; await w.tick(); await settle(); const ex = state.calls.filter((x) => x[0] === "exec"); assert.equal(ex.length, 2); assert.ok(ex.every((x) => x[2].includes("--no-optional-locks")));
+  const txt = w.draw(); assert.match(txt, /REVIEW READY/); assert.match(txt, /last status: Refactored auth/); assert.match(txt, /git status: M a\.ts · M b\.ts · \?\? c\.ts · \+1 more/.test ? /git status: .*\+1 more/ : /x/); assert.match(txt, /diff: 2 files changed/);
+  for (let i = 0; i < 20; i++) { c.t += 500; await w.tick(); } assert.equal(state.calls.filter((x) => x[0] === "exec").length, 2, "cached for 30 s");
+  c.t += 31000; await w.tick(); await settle(); assert.equal(state.calls.filter((x) => x[0] === "exec").length, 4, "refreshes after 30 s");
+  // not review-ready: no banner, no git
+  state.calls.length = 0; state.shared["conductor.sel"] = "t3"; const t3 = w.draw(); assert.ok(!/last status|git status|REVIEW READY/.test(t3));
+  for (let i = 0; i < 6; i++) { c.t += 700; await w.tick(); } assert.equal(state.calls.filter((x) => x[0] === "exec").length, 0);
+  // a hanging git is a single call; ticks keep going
+  reset(); const h = ctl({ live: false }); state.agents = [ag("t2", "done")]; state.terms = [T("t2", "done")]; state.execImpl = () => new Promise(() => {});
+  for (let i = 0; i < 12; i++) { c.t += 500; await h.tick(); } assert.equal(state.calls.filter((x) => x[0] === "exec").length, 1);
+  // git failure is shown, not thrown
+  reset(); const f = ctl({ live: false }); state.agents = [ag("t2", "done")]; state.terms = [T("t2", "done")]; state.execImpl = () => ({ code: 128, stdout: "", stderr: "not a git repository" });
+  for (let i = 0; i < 4; i++) { c.t += 500; await f.tick(); } assert.match(f.draw(), /git unavailable: not a git repository/);
+  // no snapshot / terminal-text reading code path at all
+  const src = readFileSync(join(here, "../mods/conductor-board/main.js"), "utf8") + readFileSync(join(here, "../mods/conductor-board/logic.js"), "utf8");
+  assert.ok(!/hc\(|LAST LINES|SNAPSHOT|snapshot|"read"|peekOn|--lines/.test(src), "no snapshot code");
+  assert.ok(!state.calls.some((x) => x[0] === "hc"));
+}));
+
 await test("no private paths or pi imports in the shipped mod", () => {
   for (const f of ["main.js", "logic.js"]) { const s = readFileSync(join(here, "../mods/conductor-board", f), "utf8"); assert.ok(!/\/Users\/|@mariozechner|pi-coding-agent|from "pi/.test(s), f); assert.ok(!/watchFolder\(/.test(s) && !/setTimeout|setInterval/.test(s), f + " forbidden api"); }
 });

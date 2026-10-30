@@ -153,8 +153,8 @@ export class SafeRunner {
   }
 }
 
-// How often each kind of preview may refresh while it stays selected.
-export const REFRESH_MS = { blocked: 6000, working: 4000, idle: 15000, done: 30000 };
+// How often the review banner's git info may refresh while that session stays selected.
+export const REFRESH_MS = { done: 30000 };
 export const SELECT_DEBOUNCE_MS = 400;
 
 // ---- conductor session resolution: optional generic file contract, see README "Conductor session file" ----
@@ -192,4 +192,40 @@ export function resolveManager({ fileText, terms, live, installed, now }) {
   }
   if (installed && terms.has(installed)) return { terminal: installed, source: "install", note: "" };
   return { terminal: null, source: "none", note: installed ? notFoundNote(installed) : NO_MANAGER_NOTE, why };
+}
+
+// ---- effective status: subagents ----
+// Generic, optional contract (README "Subagents and effective status"): the core records the starter of a terminal
+// as `parent` (Herdr AGENTS.md: sub-agents are terminals an agent started with `hc run`). A live descendant terminal
+// whose own status is "working" counts toward every ancestor. No pi code is imported or assumed.
+export const MAX_ANCESTOR_DEPTH = 8;
+const parentOf = (t) => {
+  const p = t?.parent;
+  const a = typeof p === "string" ? p : p && typeof p === "object" && typeof p.address === "string" ? p.address : null;
+  return a && a !== t.address ? a : null;
+};
+const statusWord = (t) => (typeof t?.status === "string" ? t.status : typeof t?.status?.status === "string" ? t.status.status : typeof t?.report?.status === "string" ? t.report.status : "");
+// Map ancestor address -> number of distinct live descendant terminals that report "working".
+// Walks `parent` links with a depth cap and a visited set (cycle safe). Missing/odd data counts nothing.
+export function workingDescendants(terms) {
+  const byAddr = new Map();
+  for (const t of Array.isArray(terms) ? terms : []) if (t && typeof t.address === "string") byAddr.set(t.address, t);
+  const out = new Map();
+  for (const t of byAddr.values()) {
+    if (statusWord(t) !== "working" || (t.state != null && t.state !== "live")) continue;
+    const seen = new Set([t.address]);
+    let p = parentOf(t);
+    for (let d = 0; p && d < MAX_ANCESTOR_DEPTH && !seen.has(p); d++) {
+      seen.add(p);
+      out.set(p, (out.get(p) || 0) + 1);
+      p = parentOf(byAddr.get(p));
+    }
+  }
+  return out;
+}
+// blocked keeps precedence; otherwise working if own status is working or any descendant is working; never invented.
+export function effectiveStatus(own, subs) {
+  if (own === "blocked") return "blocked";
+  if (own === "working") return "working";
+  return subs > 0 && (own === "idle" || own === "done") ? "working" : own;
 }

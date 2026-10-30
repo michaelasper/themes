@@ -4,8 +4,8 @@
 //   "foot"   window bottom bar: key hints
 //   "host"   left column header: manager state + recent changes digest
 //   "strips" (default) the bays: Needs you / Working / Review ready / Idle
-//   "head"   right column header for the selected agent
-//   "detail" right column body: blocked dialog, review reader (done), or a read-only text snapshot (working/idle)
+//   "head"   right column header: selected session, status line, review banner (done); runs the pane controller
+//   "detail" right column body: only a placeholder; the real terminal is the stack's "session" child
 //   "slot"   placeholder shown in the manager slot when no manager terminal is configured
 // props().manager: the install-time manager terminal (e.g. "t1"), the fallback of the manager file (README "Conductor session file").
 // The resolved manager is pinned in the left host slot and shown as a "this is the Conductor" strip that cannot be opened.
@@ -20,17 +20,17 @@
 // unreadable, malformed or stale file shows a flat line and "voice offline". props().voice_file overrides the
 // default path. Nothing here knows who writes the file. props.wave=false switches it off.
 //
-// SAFETY (see README "Safeguards" and "Open in panel"): a session is embedded ONLY on an explicit Open (click or g/enter),
-// one at a time, in the right panel's stack child "session" ({"agent":"focused"}); selection, timers and render never embed.
+// SAFETY (see README "Safeguards" and "Live pane"): the selected session is embedded after a 400 ms calm (or on Open / g / enter),
+// one at a time, in the right panel's stack child "session" ({"agent":"focused"}); render and click handlers never embed.
 // Back, a selection change, the session ending, or the layout being hidden release it. The manager terminal is never
 // openable (it is already embedded in the left slot). Commands run only through SafeRunner (one at a time, timeout,
 // per-minute cap, per-key interval, failure back-off), debounced after a selection change, and only while
-// its layout is the one shown. props.peek=false switches off all reading of other sessions' text.
+// its layout is the one shown. props.live=false (install.sh --no-live-pane) stops the pane following the selection: it then embeds only on an explicit Open.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, spaces, props, run, theme, shared, setShared, setAgentOrder, exec, hc, home, readTextFile } from "herdr";
-import { VoiceTrack, effVoice, voicePollMs, SafeRunner, Debounce, REFRESH_MS, SELECT_DEBOUNCE_MS, resolveManager, MANAGER_POLL_MS, MANAGER_IDLE_POLL_MS, NO_MANAGER_NOTE } from "./logic.js";
+import { agents, terminals, panes, spaces, props, run, theme, shared, setShared, setAgentOrder, exec, home, readTextFile } from "herdr";
+import { workingDescendants, effectiveStatus, Limiter, VoiceTrack, effVoice, voicePollMs, SafeRunner, Debounce, REFRESH_MS, SELECT_DEBOUNCE_MS, resolveManager, MANAGER_POLL_MS, MANAGER_IDLE_POLL_MS, NO_MANAGER_NOTE } from "./logic.js";
 
 const BAYS = [
   { key: "blocked", label: "NEEDS YOU" },
@@ -41,9 +41,11 @@ const BAYS = [
 const SEL = "conductor.sel"; // selected agent address
 const OPEN = "conductor.open"; // address embedded in the right panel, or null
 const MGR = "conductor.mgr"; // resolved manager {terminal, source, note}
-const STACK = "right-body"; // layout stack whose child "session" embeds the opened agent, child "detail" is the reader
+const STACK = "right-body"; // layout stack whose child "session" embeds the opened agent, child "detail" is a placeholder
 const STARTING = "conductor.starting"; // ms timestamp of the last Start conductor click
 const OPEN_DEBOUNCE_MS = 600;
+const HELD = "conductor.held"; // address the user sent Back from in live mode: not auto-embedded again until the selection moves
+const MAX_EMBEDS_PER_MIN = 12;
 const MAX_PINS = 5; // layout.set re-pins of the manager slot per mod start
 const PIN_MIN_MS = 10000;
 
@@ -66,7 +68,7 @@ const WAVE_H = 48;
 const DEMO_PHASES = [["speaking", 6000], ["idle", 2500], ["listening", 6000], ["transcribing", 3000], ["idle", 2500]];
 const voicePath = () => props()?.voice_file || `${home()}/.pi/agent/pi-speak/state.json`;
 const waveOn = () => props()?.wave !== false;
-const peekOn = () => props()?.peek !== false;
+const liveOn = () => props()?.live !== false; // props.live=false (install.sh --no-live-pane): the pane embeds only on an explicit Open
 const layoutActive = () => shared("layout") === "conductor";
 const mgrPath = () => props()?.session_file || `${home()}/.config/conductor/session.json`;
 const layoutPath = () => props()?.layout_file || `${home()}/.config/herdr-app/layouts/conductor.json`;
@@ -101,6 +103,7 @@ function age(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+const happened = (st) => (st === "done" ? "finished" : st === "blocked" ? "blocked" : st === "working" ? "started working" : "went idle");
 const base = (p) => (p ? p.split("/").filter(Boolean).pop() || "/" : "");
 const termMap = () => new Map((isDemo() ? [] : terminals()).map((x) => [x.address, x]));
 // The agent's own 7501 record: msg is the session name (working/done) or the dialog title (blocked).
@@ -112,11 +115,18 @@ const since = (term, now) => (typeof term?.status_ms === "number" ? now - term.s
 function ordered(manager) {
   if (isDemo()) return demoRows();
   const terms = termMap();
-  const list = agents();
+  const subs = workingDescendants(terminals());
+  // The Conductor is pinned in the left column and is not a strip: dropped here, so it is absent from the bays,
+  // the counts, the selection and the 1-8 numbering. Nothing to drop while it is unresolved.
+  // effective status: working if its own status is working OR any descendant terminal is working; blocked wins.
+  const list = agents().filter((x) => !manager || x.address !== manager).map((x) => {
+    const n = subs.get(x.address) || 0;
+    return { ...x, own: x.status, subs: n, status: effectiveStatus(x.status, n) };
+  });
   const rows = [];
   for (const b of BAYS) {
     for (const a of list.filter((x) => x.status === b.key).sort((x, y) => y.seq - x.seq)) {
-      rows.push({ a, term: terms.get(a.address), conductor: !!manager && a.address === manager });
+      rows.push({ a, term: terms.get(a.address) });
     }
   }
   return rows;
@@ -130,7 +140,7 @@ function label(a, term) {
 }
 function selected(rows) {
   const want = shared(SEL);
-  return rows.find((r) => r.a.address === want) ?? rows.find((r) => !r.conductor) ?? rows[0] ?? null;
+  return rows.find((r) => r.a.address === want) ?? rows[0] ?? null;
 }
 // "+ New session": a plain interactive pi in a new tab via the app's generic tab.new command (argv, no shell).
 // Starts in the manager's folder when known. Click or press n on the board; ignored in demo and within 2s of the last start.
@@ -160,10 +170,9 @@ export default class ConductorBoard extends View {
   init(_props, cx) {
     this.h = cx.focus_handle();
     this.git = {}; // address -> { at, status, diff, cwd, error }
-    this.tail = {}; // address -> { at, text }
     const role = props()?.role ?? "strips";
     cx.timer.every(30000, (cx) => cx.notify()); // ages
-    if (role === "detail") this.initDetail(cx);
+    if (role === "head") this.initControl(cx); // the head is always mounted (the stack hides "detail" while a terminal shows)
     if (role === "host" && waveOn()) this.initVoice(cx);
     if (role === "host" && !isDemo()) this.initManager(cx);
   }
@@ -293,6 +302,7 @@ export default class ConductorBoard extends View {
     const now = Date.now();
     if (now - lastOpen < OPEN_DEBOUNCE_MS) return;
     lastOpen = now;
+    setShared(HELD, null);
     if (shared(OPEN) === address) return;
     setShared(OPEN, address);
     run("agent.focus", { terminal: address });
@@ -308,70 +318,70 @@ export default class ConductorBoard extends View {
 
   choose(address) {
     if (shared(OPEN) != null && shared(OPEN) !== address) this.release();
-    setShared(SEL, address); // render only; the preview follows after a debounce (see tickDetail)
+    setShared(SEL, address); // render only; the preview follows after a debounce (see tick)
   }
 
-  // ---------- detail previews (the only place that runs commands) ----------
-  // Every 500 ms a cheap check: has the selection settled for 400 ms, or is the cached preview older than its
-  // interval? If so ONE read-only command batch runs through SafeRunner. Nothing runs in render or click handlers.
-  initDetail(cx) {
+  // ---------- pane controller (head role only; it is always mounted) ----------
+  // Every 500 ms a cheap check. Live mode: the SELECTED session's real terminal is embedded in the right pane once the
+  // selection has been stable for 400 ms (and Open's own 600 ms debounce, and at most 12 embeds a minute). A selection
+  // change releases the old embed at once (choose()), so exactly one session is embedded at a time, never the Conductor
+  // (it is not a strip and open() refuses it) and never the same terminal twice. Nothing here is tied to the embed: no
+  // timer, no loop, and release happens on selection change, Back, session end, or the layout being hidden.
+  // The banner git info runs only for the selected review-ready session, through SafeRunner (single in flight, 5 s
+  // timeout, 12/min, 30 s per key, back-off), never in render or a click handler.
+  initControl(cx) {
     this.runner = new SafeRunner({ now: Date.now, sleep: (ms) => cx.sleep(ms), timeoutMs: 5000, maxPerMinute: 12 });
     this.debounce = new Debounce(SELECT_DEBOUNCE_MS);
-    this.watched = null; // address:status of the row the preview is for
+    this.embeds = new Limiter(MAX_EMBEDS_PER_MIN, 60000, Date.now);
+    this.watched = null; // address the debounce is for
     if (isDemo()) { this.demoFill(); return; }
-    cx.timer.every(500, (cx) => this.tickDetail(cx));
+    cx.timer.every(500, (cx) => this.tick(cx));
   }
 
   demoFill() {
     const row = selected(ordered(this.manager()));
-    if (row) { this.tail[row.a.address] = { text: DEMO_TAIL }; this.git[row.a.address] = { cwd: row.term.cwd, ...DEMO_GIT }; }
+    if (row) this.git[row.a.address] = { cwd: row.term.cwd, ...DEMO_GIT };
   }
 
-  tickDetail(cx) {
+  tick(cx) {
     if (!layoutActive()) { this.synced = false; if (shared(OPEN) != null) this.release(); return; }
-    if (!this.synced) { // once per activation: the stack may remember "session" from before; start on the reader
+    if (!this.synced) { // once per activation: the stack may remember "session" from before; start on the placeholder
       this.synced = true;
       setShared(OPEN, null);
       run("layout.select", { stack: STACK, child: "detail" });
     }
-    const open = shared(OPEN);
-    if (open != null && (open === this.manager() || !agents().some((a) => a.address === open))) this.release();
-    if (shared(OPEN) != null) return; // the real terminal is showing: no previews to read
     const row = selected(ordered(this.manager()));
-    const key = row ? `${row.a.address}:${row.a.status}` : null;
-    if (key !== this.watched) { this.watched = key; this.debounce.touch(Date.now()); }
-    if (!row || row.conductor || this.runner.inflight) return;
-    if (this.debounce.pending() && !this.debounce.due(Date.now())) return;
-    this.debounce.clear();
-    const status = row.a.status;
-    const wantsText = status !== "done" && peekOn();
-    if (!wantsText && status !== "done") return;
-    const addr = row.a.address;
+    const addr = row?.a.address ?? null;
+    const open = shared(OPEN);
+    if (open != null && (open === this.manager() || open !== addr || !agents().some((a) => a.address === open))) this.release();
+    const held = shared(HELD);
+    if (held != null && held !== addr) setShared(HELD, null); // the selection moved on
+    if (addr !== this.watched) { this.watched = addr; this.debounce.touch(Date.now()); }
+    if (!row) return;
+    // live follow: embed the selected session after the selection has been calm for 400 ms
+    if (liveOn() && shared(OPEN) == null && shared(HELD) !== addr && (!this.debounce.pending() || this.debounce.due(Date.now())) && this.embeds.tryTake()) {
+      this.debounce.clear();
+      this.open(addr);
+    }
+    // banner info: only for the selected review-ready session
+    if (row.a.status !== "done" || this.runner.inflight || (this.debounce.pending() && !this.debounce.due(Date.now()))) return;
     const cwd = row.term?.cwd ?? panes().find((p) => p.terminal === addr)?.cwd;
+    if (!cwd) return;
+    const g = this.git[addr];
+    if (g && Date.now() - g.at < REFRESH_MS.done) return;
     const on = spaces().find((s) => s.id === row.a.space)?.machine ?? null;
-    const fresh = (e, ms) => e && Date.now() - e.at < ms;
-    if (fresh(status === "done" ? this.git[addr] : this.tail[addr], REFRESH_MS[status] ?? 15000)) return;
     cx.spawn(async (cx) => {
-      let changed = false;
-      if (wantsText) {
-        const r = await this.runner.run(`read:${addr}`, REFRESH_MS[status] ?? 15000, () => hc(["read", addr, "--lines", "30"]));
-        if (r.ran) { this.tail[addr] = { at: Date.now(), text: r.ok && r.value.code === 0 ? r.value.stdout : "" }; changed = true; }
-      }
-      if (status === "done" && cwd) {
-        const r = await this.runner.run(`git:${addr}`, REFRESH_MS.done, async () => {
-          // --no-optional-locks: a status read must never take the index lock an agent's own git may need.
-          const st = await exec("git", ["--no-optional-locks", "-C", cwd, "status", "--short"], { on });
-          const df = await exec("git", ["--no-optional-locks", "-C", cwd, "diff", "--stat"], { on });
-          return { st, df };
-        });
-        if (r.ran) {
-          this.git[addr] = r.ok
-            ? { at: Date.now(), cwd, status: r.value.st.code === 0 ? r.value.st.stdout : null, diff: r.value.df.code === 0 ? r.value.df.stdout : null, error: r.value.st.code === 0 ? null : r.value.st.stderr.trim() }
-            : { at: Date.now(), cwd, error: r.error };
-          changed = true;
-        }
-      }
-      if (changed) cx.notify();
+      const r = await this.runner.run(`git:${addr}`, REFRESH_MS.done, async () => {
+        // --no-optional-locks: a status read must never take the index lock an agent's own git may need.
+        const st = await exec("git", ["--no-optional-locks", "-C", cwd, "status", "--short"], { on });
+        const df = await exec("git", ["--no-optional-locks", "-C", cwd, "diff", "--stat"], { on });
+        return { st, df };
+      });
+      if (!r.ran) return;
+      this.git[addr] = r.ok
+        ? { at: Date.now(), cwd, status: r.value.st.code === 0 ? r.value.st.stdout : null, diff: r.value.df.code === 0 ? r.value.df.stdout : null, error: r.value.st.code === 0 ? null : r.value.st.stderr.trim() }
+        : { at: Date.now(), cwd, error: r.error };
+      cx.notify();
     });
   }
 
@@ -384,7 +394,7 @@ export default class ConductorBoard extends View {
     return div().flex_none().px(8).rounded(99).border(1).border_color(color).text_size(11).text_color(color).child(text);
   }
   counts(rows) {
-    const c = (k) => rows.filter((r) => r.a.status === k && !r.conductor).length;
+    const c = (k) => rows.filter((r) => r.a.status === k).length;
     return { blocked: c("blocked"), working: c("working"), done: c("done"), idle: c("idle") };
   }
   // Coloured runs on one line (the mock's <b>/<u>/<em> spans in the thread line).
@@ -420,11 +430,10 @@ export default class ConductorBoard extends View {
     const { a, term } = r;
     const now = Date.now();
     const color = t[a.status] ?? t.muted;
-    const conductor = !!r.conductor;
     const blocked = a.status === "blocked";
     const ms = since(term, now);
     const kind = kindOf(term);
-    const tag = conductor ? "THIS IS THE CONDUCTOR" : blocked ? (kind ? `BLOCKED·${kind.toUpperCase()}` : "BLOCKED") : a.status === "done" ? "REVIEW" : a.status.toUpperCase();
+    const tag = blocked ? (kind ? `BLOCKED·${kind.toUpperCase()}` : "BLOCKED") : a.status === "done" ? "REVIEW" : a.status.toUpperCase();
     let bar = div().w(3).flex_none().bg(color);
     if (blocked) bar = bar.loop("opacity", { from: 0.35, to: 1, period: 1400 });
     else if (a.status === "working") bar = bar.loop("opacity", { from: 0.55, to: 1, period: 3200 });
@@ -433,7 +442,7 @@ export default class ConductorBoard extends View {
     const thread = blocked
       ? [[kind ? `${kind} dialog` : "dialog", t.blocked], [`· ${place(a)}`, t.muted]]
       : [[place(a), t.muted], [term?.turn ? `· turn ${term.turn}` : "", t.muted]];
-    const event = conductor ? "pinned in the left column · not openable here" : ms == null ? "" : `${a.status === "done" ? "finished" : a.status === "blocked" ? "blocked" : a.status === "working" ? "started working" : "went idle"} ${age(ms)} ago`;
+    const event = ms == null ? "" : `${happened(a.own ?? a.status)} ${age(ms)} ago`; // the agent's own status; subagents are the separate hint
     return h_flex().id(`cs-${a.address}`).when(!blocked, (el) => el.w_full()).flex_none().rounded(8).overflow_hidden()
       .when(blocked, (el) => el.ml(8)) // the mock tilts blocked strips; native cannot rotate, so they step in
       .bg(isSel ? t.selected : t.chrome).border(isSel ? 2 : 1).border_color(isSel ? t.accent : a.status === "idle" ? t.selected : color)
@@ -450,6 +459,7 @@ export default class ConductorBoard extends View {
         .child(h_flex().pl(28).child(this.runs(thread)))
         .child(h_flex().pl(28).gap(8).items_center()
           .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(event))
+          .when(a.subs > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.working).child(`${a.subs} subagent${a.subs === 1 ? "" : "s"} working`)))
           .child(div().flex_none().px(4).rounded(4).border(1).border_color(color).text_size(10).text_color(color).child(tag))));
   }
 
@@ -483,7 +493,7 @@ export default class ConductorBoard extends View {
         else if (k === "j" || k === "down") move(1);
         else if (k === "k" || k === "up") move(-1);
         else if (k === "g" || k === "enter") open();
-        else if (k === "escape" || k === "esc") this.release();
+        else if (k === "escape" || k === "esc") { if (liveOn() && shared(OPEN) != null) setShared(HELD, shared(OPEN)); this.release(); }
         else if (k === "n") newSession(this.manager());
       })
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().px(12).pt(8).pb(12).gap(4)
@@ -505,7 +515,6 @@ export default class ConductorBoard extends View {
     const rec = shared(MGR);
     const mnote = isDemo() ? "" : rec && typeof rec === "object" ? rec.note || "" : "";
     const recent = rows
-      .filter((r) => !r.conductor)
       .map((r) => ({ ...r, ms: since(r.term, now) }))
       .filter((r) => r.ms != null && r.ms < 30 * 60000 && r.a.status !== "idle")
       .sort((x, y) => x.ms - y.ms).slice(0, 2);
@@ -538,26 +547,7 @@ export default class ConductorBoard extends View {
       .child(div().text_size(11).text_color(t.muted).child("The conductor is pinned here once /conductor on registers one (README: Conductor session file) or install.sh --manager tN names it. Nothing else is ever embedded here."));
   }
 
-  // ---------- right header ----------
-  head(t) {
-    const t2 = pal(t);
-    const row = selected(ordered(this.manager()));
-    const bar = (el) => el.h_full().bg(t.surface).border_b(1).border_color(t.selected);
-    if (!row) return bar(h_flex().size_full().px(16).items_center().text_size(11).text_color(t.muted).child("Nothing selected"));
-    const { a, term } = row;
-    const isOpen = shared(OPEN) === a.address;
-    const color = t[a.status] ?? t.muted;
-    const word = a.status === "done" ? "REVIEW READY" : a.status === "blocked" ? "NEEDS YOU" : a.status.toUpperCase();
-    const name = term?.cwd ? base(term.cwd) : a.space_name;
-    return bar(h_flex().size_full().px(16).gap(12).items_center())
-      .child(v_flex().flex_1().min_w(0).justify_center()
-        .child(div().truncate().text_size(11).text_color(t.muted).child(`${word} · ${name.toUpperCase()}`))
-        .child(div().truncate().text_size(15).font_bold().text_color(t.accent).child(label(a, term))))
-      .child(row.conductor
-        ? this.chip(t, "this is the Conductor", t.muted)
-        : isOpen ? this.button(t, "back", "Back", () => this.release(), false) : this.button(t, `open-${a.address}`, "Open", () => this.open(a.address), a.status === "blocked"));
-  }
-
+  // ---------- right header: title, live status line and, for a review-ready session, the review banner ----------
   button(t, id, text, fn, hot) {
     const t2 = pal(t);
     return div().id(id).flex_none().px(12).py(8).rounded(8).cursor_pointer().text_size(13)
@@ -565,45 +555,40 @@ export default class ConductorBoard extends View {
       .hover((s) => s.border_color(t.accent)).on_click(fn).child(text);
   }
 
-  // ---------- right body ----------
-  section(t, title, text, color, accent) {
-    const t2 = pal(t);
-    return v_flex().gap(4)
-      .child(div().text_size(11).text_color(t.muted).child(title))
-      .child(div().p(12).rounded(8).bg(t.chrome).when(color, (el) => el.border(1).border_color(color)).when(accent, (el) => el.border_l(2).border_color(t2.cursor))
-        .text_size(13).text_color(accent ? t.accent : t.foreground).child(text));
+  head(t) {
+    const row = selected(ordered(this.manager()));
+    const bar = (el) => el.h_full().bg(t.surface).border_b(1).border_color(t.selected);
+    if (!row) return bar(h_flex().size_full().px(16).items_center().text_size(11).text_color(t.muted).child("Nothing selected"));
+    const { a, term } = row;
+    const isOpen = shared(OPEN) === a.address;
+    const word = a.status === "done" ? "REVIEW READY" : a.status === "blocked" ? "NEEDS YOU" : a.status.toUpperCase();
+    const name = term?.cwd ? base(term.cwd) : a.space_name;
+    const ms = since(term, Date.now());
+    const kind = kindOf(term);
+    const meta = [a.status === "blocked" && msgOf(term) ? `${kind ? `${kind} dialog` : "dialog"}: ${msgOf(term)}` : "", ms == null ? "" : `${happened(a.own ?? a.status)} ${age(ms)} ago`, term?.turn ? `turn ${term.turn}` : "", a.subs > 0 ? `${a.subs} subagent${a.subs === 1 ? "" : "s"} working` : ""].filter(Boolean).join(" · ");
+    const g = this.git[a.address];
+    const lines = (x) => (x ?? "").split("\n").map((l) => l.trimEnd()).filter(Boolean);
+    const st = lines(g?.status), df = lines(g?.diff);
+    const review = a.status === "done";
+    const live = liveOn();
+    return bar(v_flex().size_full().px(16).py(8).gap(4).min_w(0))
+      .child(h_flex().flex_none().gap(12).items_center()
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_size(11).text_color(t.muted).child(`${word} · ${name.toUpperCase()}`))
+          .child(div().truncate().text_size(15).font_bold().text_color(t.accent).child(label(a, term))))
+        .when(!live, (el) => el.child(isOpen ? this.button(t, "back", "Back", () => this.release(), false) : this.button(t, `open-${a.address}`, "Open", () => this.open(a.address), a.status === "blocked"))))
+      .child(div().flex_none().truncate().text_size(11).text_color(t.muted).child(meta))
+      .when(review, (el) => el.child(v_flex().flex_1().min_h(0).min_w(0).overflow_hidden().px(8).py(4).rounded(6).bg(t.chrome).border_l(2).border_color(t.done)
+        .child(div().truncate().text_size(11).text_color(t.foreground).child(`last status: ${msgOf(term) || "(none reported)"}`))
+        .child(div().truncate().text_size(11).text_color(t.muted).child(!g ? "git: reading..." : g.error ? `git unavailable: ${g.error}` : st.length ? `git status: ${st.slice(0, 3).join(" · ")}${st.length > 3 ? ` · +${st.length - 3} more` : ""}` : "git status: working tree clean"))
+        .child(div().truncate().text_size(11).text_color(t.muted).child(!g || g.error ? "" : df.length ? `diff: ${df.at(-1).trim()}` : "diff: no unstaged changes"))));
   }
 
+  // ---------- right body: shown only while no terminal is embedded (the stack's "detail" child) ----------
   detail(t) {
     const row = selected(ordered(this.manager()));
-    const wrap = v_flex().size_full().bg(t.surface).overflow_y_scrollbar().p(16).gap(12);
-    if (!row) return wrap.child(div().text_size(13).text_color(t.muted).child("Select an agent to see what it needs from you."));
-    const { a, term } = row;
-    const addr = a.address;
-    if (row.conductor) return wrap.child(this.section(t, "THIS IS THE CONDUCTOR", "The conductor session is pinned in the left column and cannot be opened here. It stays where it is while conductor is shown.", null, true));
-    if (a.status === "blocked") {
-      const tail = (this.tail[addr]?.text ?? "").split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-14).join("\n");
-      const kind = kindOf(term);
-      return wrap
-        .child(this.section(t, `DIALOG${kind ? ` · ${kind.toUpperCase()}` : ""}`, msgOf(term) || "Waiting for you (the agent sent no title)", t.blocked))
-        .child(this.section(t, "TERMINAL · LAST LINES", tail || "(nothing read yet)"))
-        .child(div().text_size(11).text_color(t.muted).child("Answer in the session: press Open (Back returns here). This board never answers dialogs."));
-    }
-    if (a.status === "done") {
-      const g = this.git[addr];
-      const cwd = term?.cwd ?? g?.cwd;
-      const lines = (s) => (s ?? "").trimEnd();
-      return wrap
-        .child(this.section(t, "LAST STATUS MESSAGE", msgOf(term) || "(none reported)", t.done))
-        .child(this.section(t, `GIT STATUS · ${cwd ? base(cwd).toUpperCase() : "UNKNOWN FOLDER"}`, !g ? "reading..." : g.error ? `git unavailable: ${g.error}` : lines(g.status) || "working tree clean"))
-        .child(this.section(t, "GIT DIFF --STAT (UNSTAGED)", !g ? "reading..." : g.error ? "-" : lines(g.diff) || "no unstaged changes"))
-        .child(div().text_size(11).text_color(t.muted).child("Read-only git output. Verification badges and test results are not available here."));
-    }
-    if (!peekOn()) return wrap.child(div().text_size(13).text_color(t.muted).child("Preview is off (peek=false). Use Open to take over this panel with the terminal."));
-    const tail = (this.tail[addr]?.text ?? "").split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-16).join("\n");
-    return wrap
-      .child(this.section(t, `${a.status.toUpperCase()} · LAST LINES (READ-ONLY SNAPSHOT)`, tail || (this.tail[addr] ? "(empty)" : "reading...")))
-      .child(div().text_size(11).text_color(t.muted).child("A throttled text snapshot, not a live terminal. Open puts the real terminal in this panel."));
+    const msg = !row ? "Select an agent to see its terminal here." : liveOn() ? "Showing the selected session's terminal after a short pause..." : "Press Enter, g or Open to show this session's terminal here (live pane is off).";
+    return v_flex().size_full().bg(t.surface).p(16).child(div().text_size(13).text_color(t.muted).child(msg));
   }
 
   render(cx) {
