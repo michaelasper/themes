@@ -1,0 +1,8 @@
+schema = 1
+id = "conductor"
+name = "Conductor"
+version = "0.1.0"
+description = "Manage many pi sessions from one tab: a manager pane, a flight-strip board and a reader."
+icon = "grid"
+window = "window.luau"
+styles = ["conductor.css"]
