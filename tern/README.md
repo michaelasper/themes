@@ -23,6 +23,10 @@ It is idempotent and never touches running panes. Afterwards **restart running `
 
 Bays: NEEDS YOU, WORKING, REVIEW READY, IDLE. The voice strip reads `~/.pi/agent/pi-speak/state.json`. Keys work only while the board, reader or host panel has focus (not in the manager pane): `ctrl+alt+1-8` select, `ctrl+alt+j/k` move, `ctrl+alt+enter` or `ctrl+alt+g` go to the session, `ctrl+alt+n` new pi. (Plain keys and `ctrl+alt+arrows` are bound by Tern's preset and cannot be used.) Nothing here answers a dialog or interrupts a session; **Go to session** is the only action on an existing session (`ctrl+alt+n` opens a new pi tab).
 
+## Manager
+
+In the Conductor tab's left `pi`, run `/conductor on`. It registers as the manager (`~/.config/conductor/session.json`), lists every pi session that runs pi-status, and can prompt idle ones (`[from manager] ` prefix, single line, audited in `~/.pi/agent/conductor/audit.jsonl`). It refuses a pane you are looking at. Verified live: list, prompt, worker reply, completion event back to the manager.
+
 ## Limits
 
 - Needs-you only exists for sessions that run pi-status. Others fall back to Tern's working flag (working / review / idle).
