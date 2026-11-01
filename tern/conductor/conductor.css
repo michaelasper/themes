@@ -1,19 +1,48 @@
+/* Command layout, Dr Pepper vars only. Quiet by default: one slow pulse on needs-you strips. */
+.cd-root, .cd-dock { font-family: "CommitMono", ui-monospace, monospace; }
+.cd-root { display: flex; flex-direction: column; gap: 6px; }
+.cd-top { display: flex; align-items: center; gap: 8px; padding: 2px 2px 8px; border-bottom: 1px solid var(--l2); margin-bottom: 4px; }
 .cd-strip {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
-	padding: 8px 10px 8px 12px;
-	margin-bottom: 6px;
+	gap: 3px;
+	padding: 8px 12px;
+	margin-bottom: 4px;
 	border-radius: 8px;
 	background: var(--card);
 	border: 1px solid var(--l2);
-	border-left: 4px solid var(--t3);
 	cursor: pointer;
 }
 .cd-strip:hover { background: var(--raise); }
-.cd-strip.cd-selected { background: var(--raise); border-color: var(--accent); }
-.cd-strip.cd-working { border-left-color: var(--live); }
-.cd-strip.cd-review { border-left-color: var(--ok); }
-.cd-strip.cd-idle { border-left-color: var(--t4); }
-.cd-line { display: flex; align-items: center; gap: 8px; }
-.cd-bay { margin: 10px 2px 6px; }
+.cd-strip.cd-selected { background: var(--raise); outline: 2px solid var(--accent); outline-offset: -1px; }
+.cd-strip.cd-needs { border-color: var(--bad); animation: cd-pulse 2.4s infinite ease-in-out; }
+.cd-strip.cd-working { border-color: var(--live); }
+.cd-strip.cd-review { border-color: var(--ok); }
+.cd-strip.cd-idle { opacity: 0.8; }
+@keyframes cd-pulse { 50% { box-shadow: 0 0 0 3px var(--bad-fill); } }
+.cd-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.cd-bay { margin: 10px 2px 2px; text-transform: uppercase; letter-spacing: 0.1em; font-size: 11px; color: var(--t3); }
+.cd-bay-needs { color: var(--bad); }
+.cd-bay-working { color: var(--live); }
+.cd-bay-review { color: var(--ok); }
+.cd-none { padding: 6px 10px; border: 1px dashed var(--l2); border-radius: 8px; color: var(--t4); font-size: 11px; }
+
+/* host panel */
+.cd-host { padding: 6px 2px; gap: 10px; }
+.cd-digest { padding: 8px 12px; border-radius: 8px; background: var(--card); border-left: 2px solid var(--accent); color: var(--t2); }
+
+/* detail */
+.cd-lbl { margin-top: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--t3); }
+.cd-box { padding: 10px 12px; border-radius: 8px; background: var(--card); line-height: 1.55; }
+.cd-dialog { border: 1px solid var(--bad); }
+.cd-dock { padding: 6px 10px; border-top: 1px solid var(--l2); color: var(--t3); }
+
+/* voice strip: 24 bars, eight height steps, display only */
+.cd-wave { display: flex; align-items: flex-end; gap: 2px; height: 22px; padding: 0 2px; }
+.cd-b { flex: 1; min-height: 2px; border-radius: 1px; background: var(--t4); }
+.cd-v-listening .cd-b { background: var(--accent); }
+.cd-v-speaking .cd-b { background: var(--live); }
+.cd-v-transcribing .cd-b { background: var(--warn); }
+.cd-v-offline { opacity: 0.35; }
+.cd-h0 { height: 2px; } .cd-h1 { height: 4px; } .cd-h2 { height: 6px; } .cd-h3 { height: 9px; }
+.cd-h4 { height: 11px; } .cd-h5 { height: 14px; } .cd-h6 { height: 17px; } .cd-h7 { height: 19px; } .cd-h8 { height: 22px; }
