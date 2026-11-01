@@ -1,0 +1,11 @@
+{
+  "name": "tern-pi-status",
+  "version": "0.1.0",
+  "description": "Reports pi session state (working/blocked/idle/done) to the Tern Conductor plugin",
+  "type": "module",
+  "private": true,
+  "keywords": ["pi-package", "pi-extension", "tern"],
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": { "test": "node --test" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.4.0" }
+}

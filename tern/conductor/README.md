@@ -25,7 +25,7 @@ Detail panel: state and folder, the **DIALOG** box (the blocked message, never a
 
 ## Keys
 
-`1`-`8` select, `j`/`k` (or arrows) move, `enter`/`g` go, `n` new pi tab (in the selected session's cwd). They are `tern.command` chords whose `available` is true only while the board or reader has focus, so the keys stay normal keystrokes in terminals, including the manager. They also appear in the palette while the board is focused.
+`ctrl+alt+1`-`8` select, `ctrl+alt+j`/`k` move, `ctrl+alt+enter`/`g` go, `ctrl+alt+n` new pi tab (plain keys and ctrl+alt+arrows are bound by Tern's preset and are refused) (in the selected session's cwd). They are `tern.command` chords whose `available` is true only while the board, reader or host panel has focus (not the manager pane), so the keys stay normal keystrokes in terminals, including the manager. They also appear in the palette while the board is focused.
 
 There is no interrupt: use Go to session and press Esc yourself.
 

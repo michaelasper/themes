@@ -83,11 +83,12 @@ local function collect(cx, now)
 	local list, liveKeys = {}, {}
 	managerPane = readManager()
 	for _, p in cx.session:panes() do
-		if p.kind == "terminal" and p.tab ~= skip and not p.exited and p.pane ~= managerPane then
+		if (p.kind == "terminal" or p.kind == "agent") and p.tab ~= skip and not p.exited and p.pane ~= managerPane then
 			local k = key(p.pane)
 			local file = Logic.parseStatus(readFile(STATUS_DIR .. "/" .. k .. ".json", Logic.STATUS_MAX_BYTES), tern.json.decode)
 			local prog = p.program and Logic.base(p.program)
-			if file or prog == "pi" or string.find(p.title or "", "π", 1, true) == 1 then
+			local piLike = prog == "pi" or (prog == nil and string.find(p.title or "", "π", 1, true) == 1)
+			if file or piLike then
 				liveKeys[k] = true
 				local stale = file ~= nil and not Logic.fresh(file, epoch)
 				local trusted = if stale then nil else file
@@ -198,7 +199,7 @@ local function dockView()
 		return { ui.span(k, "key"), ui.span(" " .. label .. "   ", "muted") }
 	end
 	local spans = {}
-	for _, h in { { "1-8", "select" }, { "j/k", "move" }, { "enter", "go to session" }, { "n", "new pi" } } do
+	for _, h in { { "⌃⌥1-8", "select" }, { "⌃⌥j/k", "move" }, { "⌃⌥↵", "go to session" }, { "⌃⌥n", "new pi" } } do
 		for _, sp in hint(h[1], h[2]) do table.insert(spans, sp) end
 	end
 	return ui.el("div", { class = "cd-dock" }, { ui.node("text", { key = "h", spans = spans }) })
@@ -239,7 +240,6 @@ local function readerView(cx, s)
 			ui.node("text", { key = "none", spans = { ui.span("Select a session on the board.", "muted") } }),
 		})
 	end
-	local tag = tagOf(s)
 	local kids = {
 		label("l", string.upper(Logic.TAG[s.bay]) .. " · " .. string.upper(s.folder)),
 		ui.node("text", { key = "n", spans = { ui.span(s.name, "strong") } }),
@@ -259,7 +259,7 @@ local function readerView(cx, s)
 		table.insert(kids, ui.node("text", { key = "stale", spans = { ui.span(s.event, "muted") } }))
 	end
 	table.insert(kids, ui.row({
-		ui.button("Go to session", { key = "go", variant = "primary", keys = { "enter" }, actions = { click = "go=" .. s.key } }),
+		ui.button("Go to session", { key = "go", variant = "primary", keys = { "ctrl", "alt", "enter" }, actions = { click = "go=" .. s.key } }),
 	}))
 	local g = git[s.cwd]
 	if (s.bay == "review" or s.bay == "needs") and g then
@@ -275,7 +275,7 @@ local function readerView(cx, s)
 	end
 	local tail = cx.session:read(s.pane, { as = "text", lines = TAIL_LINES })
 	table.insert(kids, label("lo", "LAST OUTPUT"))
-	table.insert(kids, ui.code(type(tail) == "string" and tail or "", "text"))
+	table.insert(kids, ui.code(type(tail) == "string" and tail or "(output unavailable)", "text"))
 	return ui.el("div", { key = "detail", class = "cd-root" }, kids)
 end
 
@@ -515,7 +515,7 @@ local function open(cx)
 	local pinned = readManager()
 	if pinned then
 		local info = cx.session:pane(pinned)
-		if info and not info.exited then
+		if info and not info.exited and (info.kind == "terminal" or info.kind == "agent") and Logic.base(info.program or "") == "pi" then
 			tab = cx.layout:move_to_new_tab(pinned, nil, { focus = true })
 			if tab then
 				manager = pinned
@@ -534,7 +534,7 @@ local function open(cx)
 	gen += 1
 	local board, err = cx.canvas:open({
 		title = BOARD,
-		about = "Pi sessions grouped by what they need. Click a strip, or press 1-8 / j / k, to read it on the right.",
+		about = "Pi sessions grouped by what they need. Click a strip, or press ctrl+alt+1-8 / j / k, to read it on the right.",
 		view = ui.col({}), dock = dockView(),
 		target = manager, dir = "right", ratio = 0.78, focus = false,
 	})
@@ -565,21 +565,21 @@ local function bind(id, title, keys, run)
 	tern.command({ id = id, title = title, group = "Conductor", keys = keys, available = onBoard, run = run })
 end
 for n = 1, Logic.MAX_KEYS do
-	bind("select_" .. n, "Select session " .. n, { tostring(n) }, function(cx)
+	bind("select_" .. n, "Select session " .. n, { "ctrl+alt+" .. n }, function(cx)
 		local s = Logic.byNumber(current, n)
 		if s then reselect(cx, s.key) end
 	end)
 end
-bind("next", "Select next session", { "j", "down" }, function(cx)
+bind("next", "Select next session", { "ctrl+alt+j" }, function(cx)
 	local k = Logic.step(current, selected, 1)
 	if k then reselect(cx, k) end
 end)
-bind("prev", "Select previous session", { "k", "up" }, function(cx)
+bind("prev", "Select previous session", { "ctrl+alt+k" }, function(cx)
 	local k = Logic.step(current, selected, -1)
 	if k then reselect(cx, k) end
 end)
-bind("go", "Go to selected session", { "enter", "g" }, function(cx) go(cx, find(current, selected)) end)
-bind("new", "New pi tab", { "n" }, newPi)
+bind("go", "Go to selected session", { "ctrl+alt+enter", "ctrl+alt+g" }, function(cx) go(cx, find(current, selected)) end)
+bind("new", "New pi tab", { "ctrl+alt+n" }, newPi)
 
 tern.on("canvas_action", function(ev, cx)
 	local own = canvases(cx)
